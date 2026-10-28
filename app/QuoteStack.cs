@@ -339,10 +339,40 @@ namespace QuoteStack
                         lv.Reload();
                         lv.ToggleSelectAll();
                         sbB.Append(lv.BarProbe(460)).Append("\n");
+                        sbB.Append(lv.BarProbe(320)).Append("\n");
+                        sbB.Append(lv.BarProbe(300)).Append("\n");
                         sbB.Append(lv.BarProbe(380)).Append("\n");
                         sbB.Append(lv.BarProbe(560)).Append("\n");
                     }
                     File.WriteAllText(outPath, sbB.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
+                // Test-only hook for the remembered drawer size: writes a config that only has a
+                // hotkey, saves a size, and checks the hotkey survived the rewrite.
+                if (a == "--drawertest" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    StringBuilder sbD = new StringBuilder();
+                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\"}");
+                    int rw, rh;
+                    sbD.Append("read-before=").Append(Config.ReadDrawerSize(out rw, out rh) ? rw + "x" + rh : "none").Append("\n");
+                    Config.SaveDrawerSize(333, 401);
+                    sbD.Append("read-after=").Append(Config.ReadDrawerSize(out rw, out rh) ? rw + "x" + rh : "none").Append("\n");
+                    sbD.Append("hotkey-kept=").Append(Config.ReadHotkey()).Append("\n");
+                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\",\"drawerW\":300,\"drawerH\":400}");
+                    sbD.Append("bare-number-ignored=").Append(Config.ReadDrawerSize(out rw, out rh) ? "no" : "yes").Append("\n");
+                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\",\"drawerW\":\"340\",\"drawerH\":\"410\"}");
+                    sbD.Append("string-form=").Append(Config.ReadDrawerSize(out rw, out rh) ? rw + "x" + rh : "none").Append("\n");
+                    sbD.Append("hotkey-kept2=").Append(Config.ReadHotkey()).Append("\n");
+                    sbD.Append("file=").Append(File.ReadAllText(Config.FilePath, Encoding.UTF8)).Append("\n");
+                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\",\"drawerW\":\"100\",\"drawerH\":\"90\"}");
+                    sbD.Append("too-small-ignored=").Append(Config.ReadDrawerSize(out rw, out rh) ? "no" : "yes").Append("\n");
+                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\",\"drawerW\":\"x\",\"drawerH\":\"410\"}");
+                    sbD.Append("non-numeric-ignored=").Append(Config.ReadDrawerSize(out rw, out rh) ? "no" : "yes").Append("\n");
+                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\"}");
+                    sbD.Append("hotkey-only-ignored=").Append(Config.ReadDrawerSize(out rw, out rh) ? "no" : "yes").Append("\n");
+                    File.WriteAllText(outPath, sbD.ToString(), new UTF8Encoding(false));
                     Environment.Exit(0);
                     return;
                 }
@@ -766,7 +796,7 @@ namespace QuoteStack
             return ok ? 0 : 1;
         }
 
-        static string Escape(string s)
+        public static string Escape(string s)
         {
             if (s == null) return "";
             var sb = new StringBuilder(s.Length + 16);
@@ -856,6 +886,44 @@ namespace QuoteStack
                 return v;
             }
             catch { return null; }
+        }
+
+        // Remembered geometry: the drawer reopens at the size the user last left it at.
+        // Stored in the same config.json as the hotkey, so uninstall still means one folder.
+        // Values below this floor are ignored as corrupt input.
+        public static bool ReadDrawerSize(out int w, out int h)
+        {
+            w = 0;
+            h = 0;
+            try
+            {
+                if (!File.Exists(FilePath)) return false;
+                string json = File.ReadAllText(FilePath, Encoding.UTF8);
+                int pw, ph;
+                if (!int.TryParse(Store.JsonField(json, "drawerW"), out pw)) return false;
+                if (!int.TryParse(Store.JsonField(json, "drawerH"), out ph)) return false;
+                if (pw < 200 || ph < 200) return false;
+                w = pw;
+                h = ph;
+                return true;
+            }
+            catch { return false; }
+        }
+
+        // Rewrites config.json keeping the hotkey text verbatim and updating only the geometry.
+        public static void SaveDrawerSize(int w, int h)
+        {
+            try
+            {
+                string hk = ReadHotkey();
+                if (hk == null || hk.Length == 0) hk = "Alt+Q";
+                WriteText("{\"hotkey\":\"" + Store.Escape(hk) + "\",\"drawerW\":\"" + w
+                    + "\",\"drawerH\":\"" + h + "\"}");
+            }
+            catch (Exception ex)
+            {
+                Store.LogStartup("config: save-drawer failed " + ex.GetType().Name);
+            }
         }
 
         // Atomic replace: temp file first, then swap, so a crash cannot leave a
@@ -1453,11 +1521,20 @@ namespace QuoteStack
             _drawer.CleanupRequested += delegate { OpenCleanup(); };
             _drawer.DeleteRequested += delegate { DeleteTicked(); };
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
-            // Wide enough that the three bottom-bar controls ("清理已引用", "删除 N 项",
-            // "全选") never run into the hint text; see Drawer.MinW.
+            // Opens at the size the user last left it at (clamped to this screen); the floor is
+            // Drawer.MinW/MinH, the narrowest width that still fits the three bar entries.
             int w = Math.Min(460, wa.Width - 48);
             int h = Math.Min(520, wa.Height - 96);
-            if (h < 360) h = Math.Min(360, wa.Height - 48);
+            int rememberedW, rememberedH;
+            if (Config.ReadDrawerSize(out rememberedW, out rememberedH))
+            {
+                w = rememberedW;
+                h = rememberedH;
+            }
+            if (w > wa.Width - 48) w = wa.Width - 48;
+            if (h > wa.Height - 64) h = wa.Height - 64;
+            if (w < Drawer.MinW) w = Math.Min(Drawer.MinW, wa.Width - 48);
+            if (h < Drawer.MinH) h = Math.Min(Drawer.MinH, wa.Height - 64);
             _drawer.Size = new Size(w, h);
             _drawer.Location = new Point(wa.Right - 16 - w, wa.Top + (wa.Height - h) / 2);
             _drawer.Show();
@@ -2802,8 +2879,10 @@ namespace QuoteStack
         const int HTBOTTOM = 15;
         const int HTBOTTOMLEFT = 16;
         const int HTBOTTOMRIGHT = 17;
-        const int MinW = 460;
-        const int MinH = 360;
+        // Narrowest width at which the three bottom-bar entries still fit with a sliver of
+        // hint text left over: measured by --barprobe in the worst case (500 ticked, 500 used).
+        public const int MinW = 320;
+        public const int MinH = 360;
         // Height of the grab strip along the top. It exists so the panel can be moved with the
         // mouse: the form has no title bar, so the strip is hit-tested as HTCAPTION.
         const int HeaderH = 30;
@@ -2861,6 +2940,14 @@ namespace QuoteStack
         {
             base.OnShown(e);
             _list.Focus();
+        }
+
+        // The size is written once, on close, so dragging an edge does not hammer the disk.
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (WindowState == FormWindowState.Normal && Width >= MinW && Height >= MinH)
+                Config.SaveDrawerSize(Width, Height);
+            base.OnFormClosing(e);
         }
 
         // The strip is the only chrome the panel has: it names the panel and is the area the
