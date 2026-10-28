@@ -101,6 +101,37 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
+                // Test-only hook: the recording control's state machine without a window. Proves the
+                // two things a user can trip over: re-arming after a successful capture (a second
+                // attempt must not keep the first chord) and Alt combinations actually being
+                // accepted (they never reached OnKeyDown before).
+                if (a == "--capturetest" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    StringBuilder sb = new StringBuilder();
+                    HotkeyBox box = new HotkeyBox();
+                    box.Value = "Ctrl+Alt+Q";
+                    box.Arm();
+                    sb.Append("armed-prompt=").Append(box.Text == HotkeyBox.PromptText ? "yes" : "no:" + box.Text).Append("\n");
+                    box.CaptureKey(Keys.Alt | Keys.Shift | Keys.Q);
+                    sb.Append("alt-combo=").Append(box.Value).Append("\n");
+                    box.Arm();
+                    sb.Append("rearm-prompt=").Append(box.Text == HotkeyBox.PromptText ? "yes" : "no:" + box.Text).Append("\n");
+                    box.CaptureKey(Keys.Control | Keys.F5);
+                    sb.Append("second-combo=").Append(box.Value).Append("\n");
+                    box.CaptureKey(Keys.Q);
+                    sb.Append("bare-key-value=").Append(box.Value).Append("\n");
+                    sb.Append("bare-key-shows-error=").Append(box.Text.IndexOf("修饰键", StringComparison.Ordinal) >= 0 ? "yes" : "no:" + box.Text).Append("\n");
+                    box.Arm();
+                    box.CaptureKey(Keys.Escape);
+                    sb.Append("escape-restored=").Append(box.Value).Append("\n");
+                    box.Arm();
+                    box.CaptureKey(Keys.Delete);
+                    sb.Append("delete-cleared=").Append(box.Value.Length == 0 ? "yes" : "no:" + box.Value).Append("\n");
+                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
                 // Test-only hook: the log cap. Writes past the limit, appends once more, and reports
                 // whether the old file was rotated to startup.log.1 instead of growing forever.
                 if (a == "--logrotatetest" && Array.IndexOf(args, a) + 1 < args.Length)
@@ -130,7 +161,7 @@ namespace QuoteStack
                 {
                     string outPath = args[Array.IndexOf(args, a) + 1];
                     StringBuilder sb = new StringBuilder();
-                    string[] cands = new string[] { "Alt+Q", "Alt+Shift+Q", "Ctrl+Alt+Q", "Ctrl+Shift+Q", "Alt+D", "Ctrl+Alt+1" };
+                    string[] cands = FloatBar.FallbackHotkeys;
                     string firstFree = null;
                     foreach (string cand in cands)
                     {
@@ -1251,8 +1282,8 @@ namespace QuoteStack
             }
             string mods = "";
             if ((modifiers & Keys.Control) != 0) mods += "Ctrl+";
-            if ((modifiers & Keys.Shift) != 0) mods += "Shift+";
             if ((modifiers & Keys.Alt) != 0) mods += "Alt+";
+            if ((modifiers & Keys.Shift) != 0) mods += "Shift+";
             if (mods.Length == 0)
             {
                 error = "需要至少一个修饰键（Ctrl / Shift / Alt）";
@@ -1663,7 +1694,7 @@ namespace QuoteStack
 
         // Ordered candidates for the refused-combo path. Only combos that are rarely bound by
         // other software belong here; a candidate that parses but never registers is wasted time.
-        static readonly string[] FallbackHotkeys = new string[]
+        public static readonly string[] FallbackHotkeys = new string[]
         {
             // Alt+D is deliberately absent: in browsers it focuses the address bar, so taking it
             // would steal a key people use constantly.
@@ -3425,14 +3456,17 @@ namespace QuoteStack
     // a replacement instance on the same combo would otherwise fail with
     // ERROR_HOTKEY_ALREADY_REGISTERED (1409).
     // Records the chord instead of asking the user to type it: click into the box, press the keys,
-    // done. A read-only TextBox is used so it looks like the rest of the panel and the value stays
-    // selectable; the capture happens in OnKeyDown. Escape restores the previous chord, Delete
-    // clears it, and a rejected press shows the reason instead of silently erasing the old value.
+    // done. Clicking the box again always re-arms it, so a second attempt replaces the first
+    // instead of silently keeping it. Capture is driven by SettingsForm.ProcessCmdKey, because
+    // Alt combinations arrive as WM_SYSKEYDOWN and never reach a control's OnKeyDown — that was
+    // why a combination containing Alt could not be recorded a second time.
     class HotkeyBox : TextBox
     {
+        public const string PromptText = "请按下组合键…（Esc 取消、Delete 清空）";
+
         string _value = "";
         string _backup;
-        bool _capturing;
+        bool _armed;
 
         public HotkeyBox()
         {
@@ -3442,6 +3476,8 @@ namespace QuoteStack
             TabStop = true;
         }
 
+        public event EventHandler ValueCaptured;
+
         public string Value
         {
             get { return _value; }
@@ -3449,71 +3485,98 @@ namespace QuoteStack
             {
                 _value = value == null ? "" : value;
                 _backup = _value;
-                _capturing = false;
+                _armed = false;
                 Text = _value;
             }
+        }
+
+        public bool Armed
+        {
+            get { return _armed; }
+        }
+
+        // Puts the box back into "waiting for a chord" state and shows the prompt. The old value
+        // is kept as a backup so Escape can restore it.
+        public void Arm()
+        {
+            _armed = true;
+            _backup = _value;
+            Text = PromptText;
+            SelectAll();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            Arm();
         }
 
         protected override void OnEnter(EventArgs e)
         {
             base.OnEnter(e);
-            if (_capturing) return;
-            _capturing = true;
-            _backup = _value;
-            Text = "请按下组合键…（Esc 取消、Delete 清空）";
-            SelectAll();
+            if (!_armed) Arm();
         }
 
         protected override void OnLeave(EventArgs e)
         {
             base.OnLeave(e);
-            _capturing = false;
+            // Leaving does not throw the recording away: the box shows the current value and stays
+            // armed, so clicking it again (or pressing a key after Tab) still records.
             Text = _value;
         }
 
-        protected override void OnKeyDown(KeyEventArgs e)
+        // Returns true when the press belongs to the recording and must not reach anything else.
+        public bool CaptureKey(Keys keyData)
         {
-            e.Handled = true;
-            e.SuppressKeyPress = true;
+            Keys k = keyData & Keys.KeyCode;
+            Keys mods = keyData & Keys.Modifiers;
 
-            Keys k = e.KeyCode;
             if (k == Keys.Escape)
             {
                 _value = _backup == null ? _value : _backup;
-                EndCapture();
-                return;
+                Done();
+                return true;
             }
             if (k == Keys.Back || k == Keys.Delete)
             {
                 _value = "";
-                EndCapture();
-                return;
+                Done();
+                return true;
             }
-            if (k == Keys.ControlKey || k == Keys.ShiftKey || k == Keys.Menu || k == Keys.LWin || k == Keys.RWin)
+            if (k == Keys.ControlKey || k == Keys.ShiftKey || k == Keys.Menu
+                || k == Keys.LWin || k == Keys.RWin)
             {
                 Text = "按住修饰键，再按主键…";
-                return;
+                return true;
             }
 
             string text;
             string error;
-            if (!Hotkey.FromKeys(k, e.Modifiers, out text, out error))
+            if (!Hotkey.FromKeys(k, mods, out text, out error))
             {
                 Text = error;
-                return;
+                return true;
             }
             _value = text;
-            EndCapture();
+            Done();
+            return true;
         }
 
-        void EndCapture()
+        void Done()
         {
-            _capturing = false;
+            _armed = true;
             Text = _value;
             if (ValueCaptured != null) ValueCaptured(this, EventArgs.Empty);
         }
 
-        public event EventHandler ValueCaptured;
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            // Fallback for keys the form does not route (it handles everything while this control
+            // has focus), kept so the control still works if used on its own.
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            CaptureKey(e.KeyData);
+        }
     }
 
     class SettingsForm : Form
@@ -3586,6 +3649,21 @@ namespace QuoteStack
 
             CancelButton = cancel;
             AcceptButton = both;
+        }
+
+        // Every key goes through here while the recording box has focus, because Alt combinations
+        // arrive as WM_SYSKEYDOWN and can be swallowed by the window manager before a control's
+        // OnKeyDown sees them. Tab / Enter are passed on so the buttons keep working normally.
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            Keys code = keyData & Keys.KeyCode;
+            if (_box.Focused && code != Keys.Tab && code != Keys.Enter)
+            {
+                if (!_box.Armed) _box.Arm();
+                _box.CaptureKey(keyData);
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         Button MkButton(string text, int x, int y, int w)
