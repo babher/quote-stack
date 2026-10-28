@@ -18,18 +18,8 @@ namespace QuoteStack
         [STAThread]
         static void Main(string[] args)
         {
-            for (int i = 0; i < args.Length; i++)
-            {
-                // Test-only hook: redirect storage so the self-test can run inside a
-                // sandboxed directory. Normal runs never pass --data.
-                if (args[i] == "--data" && i + 1 < args.Length)
-                {
-                    Store.DataDirOverride = args[i + 1];
-                    i++;
-                }
-            }
-            // Runs before every other mode, including the test hooks: a temp file left by an
-            // interrupted delete is never valid data and must not survive a restart.
+            // Runs before every mode: a temp file left by an interrupted delete is
+            // never valid data and must not survive a restart.
             Store.CleanupTemp();
             foreach (string a in args)
             {
@@ -47,560 +37,6 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
-                // Test-only hook: the settings panel's write path without the dialog. Proves the
-                // hotkey is replaced while the remembered drawer size survives, and that the
-                // shapes a hand edit most often produces are refused with a readable reason.
-                if (a == "--settingstest" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    StringBuilder sb = new StringBuilder();
-                    Config.Ensure();
-                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\",\"drawerW\":\"333\",\"drawerH\":\"401\"}");
-                    Config.SaveHotkey("Ctrl+Alt+Q");
-                    int rw, rh;
-                    bool haveSize = Config.ReadDrawerSize(out rw, out rh);
-                    sb.Append("file-after=").Append(File.ReadAllText(Config.FilePath, Encoding.UTF8)).Append("\n");
-                    sb.Append("hotkey-now=").Append(Config.ReadHotkey()).Append("\n");
-                    sb.Append("size-kept=").Append(haveSize ? rw + "x" + rh : "none").Append("\n");
-                    uint m, k;
-                    string e;
-                    sb.Append("reject-bare-key=").Append(Hotkey.Parse("Q", out m, out k, out e) ? "accepted" : e).Append("\n");
-                    sb.Append("reject-unknown-mod=").Append(Hotkey.Parse("Hyper+Q", out m, out k, out e) ? "accepted" : e).Append("\n");
-                    sb.Append("reject-win-only=").Append(Hotkey.Parse("Win+Q", out m, out k, out e) ? "accepted" : e).Append("\n");
-                    sb.Append("accept-lowercase=").Append(Hotkey.Parse("ctrl+alt+q", out m, out k, out e) ? "accepted" : e).Append("\n");
-                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook: the key-capture mapping behind the settings box, so a wrong
-                // chord (missing modifier, unsupported key) is visible without opening a window.
-                if (a == "--keytest" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    StringBuilder sb = new StringBuilder();
-                    Keys[] keys = new Keys[] { Keys.Q, Keys.F2, Keys.D1, Keys.Space, Keys.ControlKey, Keys.None };
-                    Keys[] mods = new Keys[]
-                    {
-                        Keys.None,
-                        Keys.Control | Keys.Alt,
-                        Keys.Alt,
-                        Keys.None,
-                        Keys.Control,
-                        Keys.Alt | Keys.Shift
-                    };
-                    for (int k = 0; k < keys.Length; k++)
-                    {
-                        string text;
-                        string error;
-                        bool ok = Hotkey.FromKeys(keys[k], mods[k], out text, out error);
-                        sb.Append(k).Append(" key=").Append(keys[k].ToString())
-                          .Append(" mods=").Append(mods[k].ToString())
-                          .Append(" => ").Append(ok ? text : "reject: " + error).Append("\n");
-                    }
-                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook: the recording control's state machine without a window. Proves the
-                // two things a user can trip over: re-arming after a successful capture (a second
-                // attempt must not keep the first chord) and Alt combinations actually being
-                // accepted (they never reached OnKeyDown before).
-                if (a == "--capturetest" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    StringBuilder sb = new StringBuilder();
-                    HotkeyBox box = new HotkeyBox();
-                    box.Value = "Ctrl+Alt+Q";
-                    box.Arm();
-                    sb.Append("armed-prompt=").Append(box.Text == HotkeyBox.PromptText ? "yes" : "no:" + box.Text).Append("\n");
-                    box.CaptureKey(Keys.Alt | Keys.Shift | Keys.Q);
-                    sb.Append("alt-combo=").Append(box.Value).Append("\n");
-                    box.Arm();
-                    sb.Append("rearm-prompt=").Append(box.Text == HotkeyBox.PromptText ? "yes" : "no:" + box.Text).Append("\n");
-                    box.CaptureKey(Keys.Control | Keys.F5);
-                    sb.Append("second-combo=").Append(box.Value).Append("\n");
-                    box.CaptureKey(Keys.Q);
-                    sb.Append("bare-key-value=").Append(box.Value).Append("\n");
-                    sb.Append("bare-key-shows-error=").Append(box.Text.IndexOf("修饰键", StringComparison.Ordinal) >= 0 ? "yes" : "no:" + box.Text).Append("\n");
-                    box.Arm();
-                    box.CaptureKey(Keys.Escape);
-                    sb.Append("escape-restored=").Append(box.Value).Append("\n");
-                    box.Arm();
-                    box.CaptureKey(Keys.Delete);
-                    sb.Append("delete-cleared=").Append(box.Value.Length == 0 ? "yes" : "no:" + box.Value).Append("\n");
-                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook: the log cap. Writes past the limit, appends once more, and reports
-                // whether the old file was rotated to startup.log.1 instead of growing forever.
-                if (a == "--logrotatetest" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    StringBuilder sb = new StringBuilder();
-                    string path = Store.LogPath;
-                    StringBuilder bulk = new StringBuilder();
-                    while (bulk.Length < Store.LogLimitBytes + 4096)
-                        bulk.Append("x").Append(new string('y', 250)).Append("\n");
-                    File.WriteAllText(path, bulk.ToString(), new UTF8Encoding(false));
-                    sb.Append("before=").Append(new FileInfo(path).Length).Append("\n");
-                    Store.LogStartup("rotate-canary");
-                    sb.Append("after=").Append(new FileInfo(path).Length).Append("\n");
-                    string old = path + ".1";
-                    sb.Append("rotated=").Append(File.Exists(old) ? "yes" : "no").Append("\n");
-                    sb.Append("rotated-len=").Append(File.Exists(old) ? new FileInfo(old).Length.ToString() : "-").Append("\n");
-                    sb.Append("tail=").Append(File.ReadAllText(path, new UTF8Encoding(false)).Trim()).Append("\n");
-                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook: the two primitives behind "save and restart" — the fallback
-                // probe (which combos can actually be registered right now) and the log watermark
-                // reader (did the replacement report success?). Neither one needs a window.
-                if (a == "--restarttest" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    StringBuilder sb = new StringBuilder();
-                    string[] cands = FloatBar.FallbackHotkeys;
-                    string firstFree = null;
-                    foreach (string cand in cands)
-                    {
-                        uint m, k;
-                        string e;
-                        bool parsed = Hotkey.Parse(cand, out m, out k, out e);
-                        bool reg = false;
-                        if (parsed)
-                        {
-                            reg = Native.RegisterHotKey(IntPtr.Zero, 9100, m, k);
-                            if (reg) Native.UnregisterHotKey(IntPtr.Zero, 9100);
-                        }
-                        sb.Append("probe ").Append(cand)
-                          .Append(" parsed=").Append(parsed ? "yes" : e)
-                          .Append(" register=").Append(reg ? "ok" : "taken").Append("\n");
-                        if (reg && firstFree == null && cand != "Alt+Q") firstFree = cand;
-                    }
-                    sb.Append("first-fallback=").Append(firstFree == null ? "none" : firstFree).Append("\n");
-                    long mark = Store.LogLength();
-                    sb.Append("marker-before=").Append(Store.LogHasAfter(mark, "ZZ-MARKER", 20000) ? "yes" : "no").Append("\n");
-                    Store.LogStartup("ZZ-MARKER restarttest");
-                    sb.Append("marker-after=").Append(Store.LogHasAfter(mark, "ZZ-MARKER", 20000) ? "yes" : "no").Append("\n");
-                    sb.Append("marker-miss=").Append(Store.LogHasAfter(mark, "NOPE-NOT-THERE", 20000) ? "yes" : "no").Append("\n");
-                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                if (a == "--selftest")
-                {
-                    Environment.Exit(Store.SelfTest());
-                    return;
-                }
-                // Test-only hook: writes the composed insert text for two fixed records to
-                // the given path so the formatting can be compared byte for byte. Uses a
-                // fixed "now" so the expected output does not drift with the clock.
-                if (a == "--compose" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    List<Record> recs = new List<Record>();
-                    Record r1 = new Record();
-                    r1.Text = "AAA";
-                    r1.Source = "Edge";
-                    r1.Url = "https://example.com/a";
-                    r1.When = new DateTimeOffset(2026, 10, 28, 13, 44, 0, TimeSpan.FromHours(8));
-                    Record r2 = new Record();
-                    r2.Text = "BBB";
-                    r2.Source = "Word";
-                    r2.When = new DateTimeOffset(2025, 12, 31, 9, 5, 0, TimeSpan.FromHours(8));
-                    recs.Add(r1);
-                    recs.Add(r2);
-                    string body = Records.Compose(recs, new DateTimeOffset(2026, 10, 28, 14, 0, 0, TimeSpan.FromHours(8)));
-                    File.WriteAllText(args[Array.IndexOf(args, a) + 1], body, new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook: dumps what the drawer would show (group, stamp, source,
-                // length) so the grouping can be checked without clicking the UI.
-                if (a == "--list" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    List<Record> recs = Records.Load(200);
-                    StringBuilder sb = new StringBuilder();
-                    sb.Append("count=").Append(recs.Count).Append("\n");
-                    DateTimeOffset now = DateTimeOffset.Now;
-                    foreach (Record r in recs)
-                    {
-                        sb.Append(Records.GroupOf(r, now)).Append(" | ")
-                          .Append(Records.Stamp(r, now)).Append(" | ")
-                          .Append(Records.SrcLabel(r)).Append(" | len=").Append(r.Text.Length).Append("\n");
-                    }
-                    File.WriteAllText(args[Array.IndexOf(args, a) + 1], sb.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook: shows which strings the URL filter accepts, so a wrong
-                // acceptance (placeholder text, file:// path) is visible instead of assumed.
-                if (a == "--urlcheck" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string[] samples = new string[]
-                    {
-                        "https://example.com/a?b=1",
-                        "  http://x.y/z  ",
-                        "edge://settings",
-                        "搜索或输入网址",
-                        "https://example.com/a b",
-                        "file:///C:/x.html",
-                        "https://",
-                        "https://example.com/" + new string('a', 2100)
-                    };
-                    StringBuilder sb = new StringBuilder();
-                    for (int k = 0; k < samples.Length; k++)
-                        sb.Append(k).Append(" | len=").Append(samples[k].Length)
-                          .Append(" | ").Append(Capture.LooksLikeUrl(samples[k]) ? "ok" : "reject").Append("\n");
-                    File.WriteAllText(args[Array.IndexOf(args, a) + 1], sb.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook: exercises the used-journal and the atomic delete without
-                // the UI. Prints what was marked, what was deleted, what survived, and
-                // whether any .tmp file was left behind.
-                if (a == "--cleanuptest" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    string err;
-                    StringBuilder sb = new StringBuilder();
-                    Store.Append("AAA 第一条", "msedge.exe", "t", "https://example.com/a", out err);
-                    Store.Append("BBB 第二条", "msedge.exe", "t", "", out err);
-                    Store.Append("CCC 第三条", "msedge.exe", "t", "", out err);
-                    sb.Append("after-append=").Append(Store.Count()).Append("\n");
-
-                    // Identity is the record id, not the text, so the test reads the ids back
-                    // instead of recomputing hashes the way v1 did.
-                    List<Record> all = Records.Load(int.MaxValue);
-                    Record rA = null;
-                    Record rC = null;
-                    foreach (Record r in all)
-                    {
-                        if (r.Text == "AAA 第一条") rA = r;
-                        if (r.Text == "CCC 第三条") rC = r;
-                    }
-                    Store.AppendUsed(rA.Key);
-                    Store.AppendUsed(rC.Key);
-                    List<Record> usedList = Records.LoadUsedOnly();
-                    sb.Append("used=");
-                    foreach (Record r in usedList) sb.Append(r.Text).Append(",");
-                    sb.Append("\n");
-
-                    HashSet<string> drop = new HashSet<string>(StringComparer.Ordinal);
-                    drop.Add(rA.Key);
-                    int removed;
-                    bool ok = Store.DeleteByKey(drop, out removed, out err);
-                    sb.Append("delete-ok=").Append(ok).Append(" removed=").Append(removed)
-                      .Append(" error=").Append(err == null ? "-" : err).Append("\n");
-                    sb.Append("after-delete=").Append(Store.Count()).Append("\n");
-                    sb.Append("used-after-delete=");
-                    foreach (Record r in Records.LoadUsedOnly()) sb.Append(r.Text).Append(",");
-                    sb.Append("\n");
-                    sb.Append("tmp-left=").Append(File.Exists(Store.FilePath + ".tmp") ? "yes" : "no").Append("\n");
-                    sb.Append("usedtmp-left=").Append(File.Exists(Store.UsedPath + ".tmp") ? "yes" : "no").Append("\n");
-                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook for the D1 regression: two captures of the same sentence are
-                // two records with two ids, so deleting one must leave the other alive and
-                // un-marked. Prints identities only, never the sentence body.
-                if (a == "--idt" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    string err2;
-                    StringBuilder sb2 = new StringBuilder();
-                    Store.Append("DUP 同文一条", "msedge.exe", "t", "", out err2);
-                    Store.Append("DUP 同文一条", "msedge.exe", "t", "", out err2);
-                    List<Record> two = Records.Load(int.MaxValue);
-                    sb2.Append("appended=").Append(two.Count).Append("\n");
-                    string k0 = two.Count > 0 ? two[0].Key : "-";
-                    string k1 = two.Count > 1 ? two[1].Key : "-";
-                    sb2.Append("keys-differ=").Append(k0 != k1).Append(" ids=").Append(k0.Length)
-                       .Append("/").Append(k1.Length).Append("\n");
-                    Store.AppendUsed(k0);
-                    HashSet<string> dropOne = new HashSet<string>(StringComparer.Ordinal);
-                    dropOne.Add(k0);
-                    int removedOne;
-                    bool okOne = Store.DeleteByKey(dropOne, out removedOne, out err2);
-                    List<Record> left = Records.Load(int.MaxValue);
-                    sb2.Append("delete-ok=").Append(okOne).Append(" removed=").Append(removedOne)
-                       .Append(" remaining=").Append(left.Count).Append("\n");
-                    sb2.Append("remaining-is-duplicate=").Append(left.Count == 1 ? (left[0].Text == "DUP 同文一条") : false).Append("\n");
-                    sb2.Append("remaining-used=").Append(left.Count == 1 ? left[0].Used : true).Append("\n");
-                    int usedLines = 0;
-                    if (File.Exists(Store.UsedPath))
-                        foreach (string l in File.ReadAllLines(Store.UsedPath, new UTF8Encoding(false)))
-                            if (l.Trim().Length > 0) usedLines++;
-                    sb2.Append("used-lines=").Append(usedLines).Append("\n");
-                    // v1 rows carry no id: identity falls back to the text hash, and the journal
-                    // written by v1 keyed on that hash has to keep working after the upgrade.
-                    string legacyText = "LEGACY 老记录";
-                    string legacyLine = "{\"ts\":\"" + DateTime.Now.AddDays(-30).ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz")
-                        + "\",\"source\":\"msedge.exe\",\"title\":\"t\",\"url\":\"\",\"text\":\"" + legacyText + "\"}";
-                    File.AppendAllText(Store.FilePath, legacyLine + "\n", new UTF8Encoding(false));
-                    File.AppendAllText(Store.UsedPath,
-                        "{\"ts\":\"2026-10-01T10:00:00.000+08:00\",\"sha12\":\"" + Store.Hash12(legacyText) + "\"}\n",
-                        new UTF8Encoding(false));
-                    Record lg = null;
-                    foreach (Record r in Records.Load(int.MaxValue)) if (r.Text == legacyText) lg = r;
-                    sb2.Append("legacy-found=").Append(lg != null).Append("\n");
-                    sb2.Append("legacy-used=").Append(lg != null && lg.Used).Append("\n");
-                    HashSet<string> dropLegacy = new HashSet<string>(StringComparer.Ordinal);
-                    if (lg != null) dropLegacy.Add(lg.Key);
-                    int removedLegacy;
-                    bool okLegacy = Store.DeleteByKey(dropLegacy, out removedLegacy, out err2);
-                    bool legacyGone = true;
-                    foreach (Record r in Records.Load(int.MaxValue)) if (r.Text == legacyText) legacyGone = false;
-                    sb2.Append("legacy-delete-ok=").Append(okLegacy).Append(" removed=").Append(removedLegacy).Append("\n");
-                    sb2.Append("legacy-gone=").Append(legacyGone).Append("\n");
-                    int usedAfterLegacy = 0;
-                    if (File.Exists(Store.UsedPath))
-                        foreach (string l in File.ReadAllLines(Store.UsedPath, new UTF8Encoding(false)))
-                            if (l.Trim().Length > 0) usedAfterLegacy++;
-                    sb2.Append("legacy-used-lines=").Append(usedAfterLegacy).Append("\n");
-                    sb2.Append("tmp-left=").Append(File.Exists(Store.FilePath + ".tmp") ? "yes" : "no").Append("\n");
-                    File.WriteAllText(outPath, sb2.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook: ticks rows out of order and prints what Checked() returns,
-                // so the "insert in the order the user ticked" rule can be checked headlessly.
-                if (a == "--ordertest" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    StringBuilder sb = new StringBuilder();
-                    using (QuoteListView lv = new QuoteListView())
-                    {
-                        lv.Reload();
-                        sb.Append("loaded=").Append(lv.Count).Append("\n");
-                        foreach (int i in new int[] { 2, 0, 3 }) lv.Toggle(i);
-                        sb.Append("picks=");
-                        foreach (Record r in lv.Checked()) sb.Append(r.Text).Append(",");
-                        sb.Append("\n");
-                        lv.Toggle(0);   // un-ticking must drop it from the order, not just clear a flag
-                        sb.Append("after-untick=");
-                        foreach (Record r in lv.Checked()) sb.Append(r.Text).Append(",");
-                        sb.Append("\n");
-                        lv.Toggle(0);   // re-ticking puts it last
-                        sb.Append("after-retick=");
-                        foreach (Record r in lv.Checked()) sb.Append(r.Text).Append(",");
-                        sb.Append("\n");
-                        sb.Append("ordinals=");
-                        foreach (Record r in lv.Checked()) sb.Append(r.Text).Append(":").Append(lv.OrdinalOf(r)).Append(" ");
-                        sb.Append("\n");
-                        sb.Append("ordinal-of-unticked=").Append(lv.OrdinalOf(lv.Sample(1))).Append("\n");
-                    }
-                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook: the storage round-trip. Quotes arrive with quotes, tabs,
-                // newlines and astral characters; none of that may corrupt the file or come
-                // back changed after a reload.
-                if (a == "--roundtrip" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    string[] tricky = new string[]
-                    {
-                        "plain",
-                        "has \"quotes\" and \\backslash",
-                        "line1\nline2\r\nline3",
-                        "tab\there",
-                        "emoji 😀 中文",
-                        "trailing space ",
-                        "\"text\":\"fake-field\""
-                    };
-                    string err;
-                    StringBuilder sb = new StringBuilder();
-                    foreach (string s in tricky) Store.Append(s, "msedge.exe", "t", "", out err);
-                    int lines = File.Exists(Store.FilePath) ? File.ReadAllLines(Store.FilePath).Length : 0;
-                    List<Record> back = Records.Load(int.MaxValue);
-                    sb.Append("appended=").Append(tricky.Length).Append(" file-lines=").Append(lines).Append("\n");
-                    sb.Append("loaded=").Append(back.Count).Append("\n");
-                    bool allOk = back.Count == tricky.Length;
-                    for (int k = 0; k < tricky.Length; k++)
-                    {
-                        // Load returns newest first, so case k sits at the mirrored index.
-                        string got = back.Count > k ? back[back.Count - 1 - k].Text : null;
-                        bool ok = got == tricky[k];
-                        if (!ok) allOk = false;
-                        sb.Append("case").Append(k).Append(" ok=").Append(ok)
-                          .Append(" len=").Append(got == null ? -1 : got.Length).Append("\n");
-                    }
-                    sb.Append("all-ok=").Append(allOk).Append("\n");
-                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // not click pixels; it calls the very methods those two controls call.
-                if (a == "--delticktest" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    string err;
-                    StringBuilder sb = new StringBuilder();
-                    for (int k = 0; k < 4; k++)
-                        Store.Append("DEL-" + (char)('A' + k), "msedge.exe", "t", "", out err);
-                    using (QuoteListView lv = new QuoteListView())
-                    {
-                        lv.Reload();
-                        sb.Append("loaded=").Append(lv.Count).Append("\n");
-                        lv.ToggleSelectAll();
-                        sb.Append("after-select-all=");
-                        foreach (Record r in lv.Checked()) sb.Append(r.Text).Append(",");
-                        sb.Append("\n");
-                        HashSet<string> drop = new HashSet<string>(StringComparer.Ordinal);
-                        foreach (Record r in lv.Checked()) drop.Add(r.Key);
-                        int removed;
-                        bool ok = Store.DeleteByKey(drop, out removed, out err);
-                        sb.Append("delete-ok=").Append(ok).Append(" removed=").Append(removed)
-                          .Append(" error=").Append(err == null ? "-" : err).Append("\n");
-                        sb.Append("after-delete=").Append(Store.Count()).Append("\n");
-                        lv.Reload();
-                        sb.Append("reloaded=").Append(lv.Count).Append("\n");
-                        lv.ToggleSelectAll();
-                        sb.Append("select-all-on-empty=").Append(lv.Checked().Count).Append("\n");
-                        sb.Append("tmp-left=").Append(File.Exists(Store.FilePath + ".tmp") ? "yes" : "no").Append("\n");
-                    }
-                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook for the bottom-bar geometry: measures the three entries at the
-                // drawer's current minimum width, at the old 380px width, and at a wide one.
-                if (a == "--barprobe" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    string errB;
-                    StringBuilder sbB = new StringBuilder();
-                    for (int k = 0; k < 3; k++)
-                        Store.Append("BAR-" + (char)('A' + k), "msedge.exe", "t", "", out errB);
-                    using (QuoteListView lv = new QuoteListView())
-                    {
-                        lv.Reload();
-                        lv.ToggleSelectAll();
-                        sbB.Append(lv.BarProbe(460)).Append("\n");
-                        sbB.Append(lv.BarProbe(320)).Append("\n");
-                        sbB.Append(lv.BarProbe(300)).Append("\n");
-                        sbB.Append(lv.BarProbe(380)).Append("\n");
-                        sbB.Append(lv.BarProbe(560)).Append("\n");
-                    }
-                    File.WriteAllText(outPath, sbB.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook for red line 8: builds the launch-refusal line the real code
-                // logs, checks it for a profile path, and counts path-carrying lines in the log.
-                if (a == "--logprobe" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    StringBuilder sbL = new StringBuilder();
-                    string line = FloatBar.HotkeyFailureLine("Alt+Q");
-                    sbL.Append("line=").Append(line).Append("\n");
-                    sbL.Append("line-has-user-path=").Append(line.IndexOf("Users\\", StringComparison.OrdinalIgnoreCase) >= 0 ? "yes" : "no").Append("\n");
-                    Store.LogStartup(line);
-                    string logPath = Path.Combine(Store.DirPath, "startup.log");
-                    string all = File.Exists(logPath) ? File.ReadAllText(logPath, Encoding.UTF8) : "";
-                    int withPath = 0;
-                    int lines = 0;
-                    foreach (string l in all.Split('\n'))
-                    {
-                        if (l.Length == 0) continue;
-                        lines++;
-                        if (l.IndexOf("Users\\", StringComparison.OrdinalIgnoreCase) >= 0) withPath++;
-                    }
-                    sbL.Append("log-lines=").Append(lines).Append("\n");
-                    sbL.Append("log-lines-with-path=").Append(withPath).Append("\n");
-                    sbL.Append("log-tail=").Append(all.Length > 200 ? all.Substring(all.Length - 200) : all).Append("\n");
-                    File.WriteAllText(outPath, sbL.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook for the settings accordion: builds the dialog without showing it,
-                // records its collapsed/expanded geometry, and disposes it.
-                if (a == "--accordiontest" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    StringBuilder sbA = new StringBuilder();
-                    using (SettingsForm f = new SettingsForm("Alt+Shift+Q"))
-                    {
-                        sbA.Append("collapsed-size=").Append(f.ClientSize.Width).Append("x").Append(f.ClientSize.Height).Append("\n");
-                        sbA.Append("collapsed-body=").Append(f.BodyVisible ? "visible" : "hidden").Append("\n");
-                        sbA.Append("collapsed-arrow=").Append(f.FirstRow.Expanded ? "down" : "right").Append("\n");
-                        sbA.Append("row-title=").Append(f.FirstRow.Title).Append("\n");
-                        sbA.Append("row-value=").Append(f.FirstRow.ValueText).Append("\n");
-                        f.ToggleFirstRow();
-                        sbA.Append("expanded-size=").Append(f.ClientSize.Width).Append("x").Append(f.ClientSize.Height).Append("\n");
-                        sbA.Append("expanded-body=").Append(f.BodyVisible ? "visible" : "hidden").Append("\n");
-                        sbA.Append("expanded-arrow=").Append(f.FirstRow.Expanded ? "down" : "right").Append("\n");
-                        f.ToggleFirstRow();
-                        sbA.Append("collapsed-again=").Append(f.ClientSize.Width).Append("x").Append(f.ClientSize.Height).Append("\n");
-                    }
-                    File.WriteAllText(outPath, sbA.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook for the remembered drawer size: writes a config that only has a
-                // hotkey, saves a size, and checks the hotkey survived the rewrite.
-                if (a == "--drawertest" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    StringBuilder sbD = new StringBuilder();
-                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\"}");
-                    int rw, rh;
-                    sbD.Append("read-before=").Append(Config.ReadDrawerSize(out rw, out rh) ? rw + "x" + rh : "none").Append("\n");
-                    Config.SaveDrawerSize(333, 401);
-                    sbD.Append("read-after=").Append(Config.ReadDrawerSize(out rw, out rh) ? rw + "x" + rh : "none").Append("\n");
-                    sbD.Append("hotkey-kept=").Append(Config.ReadHotkey()).Append("\n");
-                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\",\"drawerW\":300,\"drawerH\":400}");
-                    sbD.Append("bare-number-ignored=").Append(Config.ReadDrawerSize(out rw, out rh) ? "no" : "yes").Append("\n");
-                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\",\"drawerW\":\"340\",\"drawerH\":\"410\"}");
-                    sbD.Append("string-form=").Append(Config.ReadDrawerSize(out rw, out rh) ? rw + "x" + rh : "none").Append("\n");
-                    sbD.Append("hotkey-kept2=").Append(Config.ReadHotkey()).Append("\n");
-                    sbD.Append("file=").Append(File.ReadAllText(Config.FilePath, Encoding.UTF8)).Append("\n");
-                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\",\"drawerW\":\"100\",\"drawerH\":\"90\"}");
-                    sbD.Append("too-small-ignored=").Append(Config.ReadDrawerSize(out rw, out rh) ? "no" : "yes").Append("\n");
-                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\",\"drawerW\":\"x\",\"drawerH\":\"410\"}");
-                    sbD.Append("non-numeric-ignored=").Append(Config.ReadDrawerSize(out rw, out rh) ? "no" : "yes").Append("\n");
-                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\"}");
-                    sbD.Append("hotkey-only-ignored=").Append(Config.ReadDrawerSize(out rw, out rh) ? "no" : "yes").Append("\n");
-                    File.WriteAllText(outPath, sbD.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
-                // Test-only hook for the live refresh: ticks two rows out of order, expands one,
-                // appends a third record while the list exists, then runs ReloadPreserving and
-                // prints what survived the rebuild.
-                if (a == "--refresh" && Array.IndexOf(args, a) + 1 < args.Length)
-                {
-                    string outPath = args[Array.IndexOf(args, a) + 1];
-                    string err3;
-                    StringBuilder sb3 = new StringBuilder();
-                    Store.Append("RF-A", "msedge.exe", "t", "", out err3);
-                    Store.Append("RF-B", "msedge.exe", "t", "", out err3);
-                    using (QuoteListView lv = new QuoteListView())
-                    {
-                        lv.Reload();
-                        sb3.Append("before-count=").Append(lv.Count).Append("\n");
-                        lv.Toggle(1); // newest first: index 0 is RF-B, index 1 is RF-A
-                        lv.Toggle(0);
-                        sb3.Append("before-picks=");
-                        foreach (Record r in lv.Checked()) sb3.Append(r.Text).Append(",");
-                        sb3.Append("\n");
-                        Store.Append("RF-C", "msedge.exe", "t", "", out err3);
-                        lv.ReloadPreserving();
-                        sb3.Append("after-count=").Append(lv.Count).Append("\n");
-                        sb3.Append("after-picks=");
-                        foreach (Record r in lv.Checked()) sb3.Append(r.Text).Append(",");
-                        sb3.Append("\n");
-                        sb3.Append("after-first=").Append(lv.Sample(0) == null ? "-" : lv.Sample(0).Text).Append("\n");
-                        sb3.Append("after-count-1000=").Append(Store.Count()).Append("\n");
-                    }
-                    File.WriteAllText(outPath, sb3.ToString(), new UTF8Encoding(false));
-                    Environment.Exit(0);
-                    return;
-                }
             }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
@@ -612,14 +48,10 @@ namespace QuoteStack
     {
         static readonly object Gate = new object();
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false);
-
-        public static string DataDirOverride;
-
         public static string DirPath
         {
             get
             {
-                if (DataDirOverride != null) return DataDirOverride;
                 return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "quote-stack");
             }
         }
@@ -1539,6 +971,9 @@ namespace QuoteStack
         // The combo this instance actually holds, kept so a refused restart can put it back.
         uint _regMods;
         uint _regVk;
+        // The text a user must press, in the same shape as config.json. The drawer hints read it
+        // instead of hard-coding a combo that stops being true the moment the hotkey is changed.
+        public static string HotkeyLabel = "Alt+Shift+Q";
 
         int _count;
         string _preview;
@@ -1711,6 +1146,7 @@ namespace QuoteStack
 
             _regMods = mods;
             _regVk = vk;
+            HotkeyLabel = wanted;
             Store.LogStartup("hotkey-registered: " + wanted);
             _hintTimer.Start();
             Invalidate();
@@ -2125,7 +1561,7 @@ namespace QuoteStack
             {
                 // Nothing ticked: nothing is inserted. The ticks are cleared after an insert
                 // on purpose, so a second Enter must not paste the same quote again.
-                _drawer.ListView.SetHint("没有勾选内容 · 先勾选再按 Enter");
+                _drawer.ListView.SetHint("没有勾选内容 · 先勾选再按热键（" + FloatBar.HotkeyLabel + "）");
                 return;
             }
             string text = Records.Compose(chosen, DateTimeOffset.Now);
@@ -3240,7 +2676,7 @@ namespace QuoteStack
                     // Enter no longer inserts: the insert is the hotkey only, so the same
                     // key never means two different things depending on where the focus is.
                     e.Handled = true;
-                    _hint = "插入请按热键（Alt+Shift+Q）";
+                    _hint = "插入请按热键（" + FloatBar.HotkeyLabel + "）";
                     Invalidate();
                     break;
             }
@@ -3732,7 +3168,7 @@ namespace QuoteStack
             _body.Controls.Add(_box);
 
             Label hint = new Label();
-            hint.Text = "点这里，然后直接按组合键（修饰键 + 主键；Esc 取消、Delete 清空）";
+            hint.Text = "点这里后直接按组合键（Esc 取消）· Alt+Q 常被豆包占用，建议 Ctrl+Alt+Q";
             hint.AutoSize = false;
             hint.Size = new Size(340, 18);
             hint.Location = new Point(0, 34);
@@ -3838,6 +3274,9 @@ namespace QuoteStack
             string error;
             if (!Hotkey.Parse(text, out mods, out vk, out error))
             {
+                // A refused value is exactly the moment a user asks "why did nothing happen?",
+                // so it is recorded. The hotkey itself is not private (no page text, no path).
+                Store.LogStartup("settings: hotkey-rejected value=[" + text + "] reason=" + error);
                 _msg.Text = error;
                 return;
             }
@@ -3847,7 +3286,8 @@ namespace QuoteStack
             }
             catch (Exception ex)
             {
-                _msg.Text = "写入失败：" + ex.GetType().Name;
+                Store.LogStartup("settings: save-failed value=[" + text + "] ex=" + ex.GetType().Name);
+                _msg.Text = "写入失败：" + ex.GetType().Name + "（" + ex.Message + "）";
                 return;
             }
             Store.LogStartup("settings: hotkey=" + text + " restart=" + (restart ? "yes" : "no"));
