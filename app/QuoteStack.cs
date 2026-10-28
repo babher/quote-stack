@@ -47,6 +47,31 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
+                // Test-only hook: the settings panel's write path without the dialog. Proves the
+                // hotkey is replaced while the remembered drawer size survives, and that the
+                // shapes a hand edit most often produces are refused with a readable reason.
+                if (a == "--settingstest" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    StringBuilder sb = new StringBuilder();
+                    Config.Ensure();
+                    Config.WriteText("{\"hotkey\":\"Alt+Shift+Q\",\"drawerW\":\"333\",\"drawerH\":\"401\"}");
+                    Config.SaveHotkey("Ctrl+Alt+Q");
+                    int rw, rh;
+                    bool haveSize = Config.ReadDrawerSize(out rw, out rh);
+                    sb.Append("file-after=").Append(File.ReadAllText(Config.FilePath, Encoding.UTF8)).Append("\n");
+                    sb.Append("hotkey-now=").Append(Config.ReadHotkey()).Append("\n");
+                    sb.Append("size-kept=").Append(haveSize ? rw + "x" + rh : "none").Append("\n");
+                    uint m, k;
+                    string e;
+                    sb.Append("reject-bare-key=").Append(Hotkey.Parse("Q", out m, out k, out e) ? "accepted" : e).Append("\n");
+                    sb.Append("reject-unknown-mod=").Append(Hotkey.Parse("Hyper+Q", out m, out k, out e) ? "accepted" : e).Append("\n");
+                    sb.Append("reject-win-only=").Append(Hotkey.Parse("Win+Q", out m, out k, out e) ? "accepted" : e).Append("\n");
+                    sb.Append("accept-lowercase=").Append(Hotkey.Parse("ctrl+alt+q", out m, out k, out e) ? "accepted" : e).Append("\n");
+                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
                 if (a == "--selftest")
                 {
                     Environment.Exit(Store.SelfTest());
@@ -953,6 +978,19 @@ namespace QuoteStack
             }
         }
 
+        // Rewrites config.json keeping the remembered geometry and replacing only the hotkey.
+        // Called from the settings panel, which is why editing the file by hand is no longer
+        // the only way to change the key.
+        public static void SaveHotkey(string hk)
+        {
+            int w, h;
+            bool haveSize = ReadDrawerSize(out w, out h);
+            string json = "{\"hotkey\":\"" + Store.Escape(hk) + "\"";
+            if (haveSize) json += ",\"drawerW\":\"" + w + "\",\"drawerH\":\"" + h + "\"";
+            json += "}";
+            WriteText(json);
+        }
+
         // Atomic replace: temp file first, then swap, so a crash cannot leave a
         // half-written config behind.
         public static void WriteText(string content)
@@ -1353,6 +1391,7 @@ namespace QuoteStack
             _tray.Text = "QuoteStack";
             var menu = new ContextMenuStrip();
             menu.Items.Add("打开引用列表", null, delegate { OpenDrawer(); });
+            menu.Items.Add("设置…", null, delegate { OpenSettings(); });
             menu.Items.Add("清理已引用的内容…", null, delegate { OpenCleanup(); });
             menu.Items.Add("打开配置", null, delegate
             {
@@ -1555,6 +1594,7 @@ namespace QuoteStack
             _drawer.FormClosed += delegate { _drawer = null; Invalidate(); };
             _drawer.CleanupRequested += delegate { OpenCleanup(); };
             _drawer.DeleteRequested += delegate { DeleteTicked(); };
+            _drawer.SettingsRequested += delegate { OpenSettings(); };
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
             // Opens at the size the user last left it at (clamped to this screen); the floor is
             // Drawer.MinW/MinH, the narrowest width that still fits the three bar entries.
@@ -1614,6 +1654,69 @@ namespace QuoteStack
                     _drawer.ListView.Focus();
                 }
             }
+        }
+
+        // Opens the hotkey editor. "Save" only writes the file; "Save and restart" hands over to
+        // RestartApp, which is the only path that can make the new key live in this session.
+        void OpenSettings()
+        {
+            string current = Config.ReadHotkey();
+            using (SettingsForm f = new SettingsForm(current))
+            {
+                f.ShowDialog(this);
+                if (f.Saved == null) return;
+                if (f.RestartRequested)
+                {
+                    RestartApp(f.Saved);
+                    return;
+                }
+                _status = "热键已保存 · 重启后生效";
+                _flashKind = KindOk;
+                _flash.Interval = 3000;
+                _flash.Stop();
+                _flash.Start();
+                Invalidate();
+            }
+        }
+
+        // Starts a fresh instance and only then leaves. The old registration is released first:
+        // the replacement would otherwise be refused with ERROR_HOTKEY_ALREADY_REGISTERED (1409)
+        // for as long as this process still holds the combo.
+        void RestartApp(string hotkey)
+        {
+            bool started = false;
+            try
+            {
+                Native.UnregisterHotKey(Handle, HOTKEY_ID);
+                ProcessStartInfo psi = new ProcessStartInfo(Application.ExecutablePath);
+                psi.UseShellExecute = false;
+                psi.WorkingDirectory = Path.GetDirectoryName(Application.ExecutablePath);
+                Process p = Process.Start(psi);
+                // A too-early exit means the replacement refused to start (hotkey taken, config
+                // unreadable). Then this instance keeps its old key instead of leaving the user
+                // with nothing running.
+                Thread.Sleep(800);
+                started = p != null && !p.HasExited;
+            }
+            catch (Exception ex)
+            {
+                Store.LogStartup("restart-failed: " + ex.GetType().Name);
+            }
+            if (started)
+            {
+                Store.LogStartup("restart: hotkey=" + hotkey);
+                Close();
+                return;
+            }
+
+            Store.LogStartup("restart-failed: replacement did not survive");
+            uint mods;
+            uint vk;
+            string error;
+            if (Hotkey.Parse(Config.ReadHotkey(), out mods, out vk, out error))
+                Native.RegisterHotKey(Handle, HOTKEY_ID, mods, vk);
+            MessageBox.Show(this, "重启失败：新实例没能启动。请手动运行 RUN.cmd。",
+                "QuoteStack", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         // Deletes exactly the ticked quotes, straight from the drawer's bottom bar. Same
@@ -2902,6 +3005,227 @@ namespace QuoteStack
         }
     }
 
+    // The round button that floats beside the drawer. It is a separate window on purpose: a
+    // child control would be clipped by the drawer frame, and this button has to stick out past
+    // the panel's edge. WS_EX_NOACTIVATE keeps the drawer's focus, so opening settings cannot
+    // silently change what the hotkey would do next (the routing checks ContainsFocus).
+    class GearBubble : Form
+    {
+        const int D = 36;
+        bool _hover;
+
+        public event EventHandler Clicked;
+
+        public GearBubble()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            Size = new Size(D, D);
+            BackColor = Color.FromArgb(44, 46, 54);
+            Cursor = Cursors.Hand;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.UserPaint, true);
+            ApplyRegion();
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
+                cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW
+                return cp;
+            }
+        }
+
+        // Round window: the corners are cut away so a click there falls through to whatever is
+        // behind the button instead of landing on an invisible square.
+        void ApplyRegion()
+        {
+            Region old = Region;
+            using (GraphicsPath p = new GraphicsPath())
+            {
+                p.AddEllipse(0, 0, D - 1, D - 1);
+                Region = new Region(p);
+            }
+            if (old != null) old.Dispose();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            RectangleF box = new RectangleF(0.5f, 0.5f, D - 2, D - 2);
+            using (SolidBrush b = new SolidBrush(_hover ? Color.FromArgb(60, 64, 76) : Color.FromArgb(44, 46, 54)))
+                g.FillEllipse(b, box);
+            using (Pen ring = new Pen(Color.FromArgb(96, 102, 118)))
+                g.DrawEllipse(ring, box);
+
+            // Gear: eight teeth around a ring plus a hub, drawn as lines so no icon file or
+            // font glyph has to ship with the app.
+            float cx = D / 2f;
+            float cy = D / 2f;
+            Color ink = _hover ? Color.FromArgb(228, 231, 238) : Color.FromArgb(196, 202, 214);
+            using (Pen p = new Pen(ink, 1.6f))
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    double a = i * Math.PI / 4.0;
+                    float x1 = cx + (float)(Math.Cos(a) * 8.0);
+                    float y1 = cy + (float)(Math.Sin(a) * 8.0);
+                    float x2 = cx + (float)(Math.Cos(a) * 11.5);
+                    float y2 = cy + (float)(Math.Sin(a) * 11.5);
+                    g.DrawLine(p, x1, y1, x2, y2);
+                }
+                g.DrawEllipse(p, cx - 7f, cy - 7f, 14f, 14f);
+            }
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            base.OnMouseEnter(e);
+            _hover = true;
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            _hover = false;
+            Invalidate();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button != MouseButtons.Left) return;
+            EventHandler h = Clicked;
+            if (h != null) h(this, EventArgs.Empty);
+        }
+    }
+
+    // Hotkey editor. Saving no longer means "find config.json and restart by hand": this panel
+    // writes the file and can restart the app, releasing the old hotkey registration first —
+    // a replacement instance on the same combo would otherwise fail with
+    // ERROR_HOTKEY_ALREADY_REGISTERED (1409).
+    class SettingsForm : Form
+    {
+        readonly TextBox _box = new TextBox();
+        readonly Label _msg = new Label();
+
+        public string Saved { get; private set; }
+
+        public bool RestartRequested { get; private set; }
+
+        public SettingsForm(string current)
+        {
+            Text = "QuoteStack 设置";
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition = FormStartPosition.CenterScreen;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            TopMost = true;
+            ClientSize = new Size(372, 168);
+            BackColor = Color.FromArgb(28, 28, 32);
+            ForeColor = Color.FromArgb(228, 231, 238);
+            Font = new Font("Microsoft YaHei UI", 9.5f);
+
+            Label caption = new Label();
+            caption.Text = "热键";
+            caption.AutoSize = true;
+            caption.Location = new Point(16, 14);
+            Controls.Add(caption);
+
+            _box.Text = current == null ? "" : current;
+            _box.Location = new Point(16, 38);
+            _box.Size = new Size(340, 26);
+            _box.BackColor = Color.FromArgb(40, 42, 48);
+            _box.ForeColor = Color.FromArgb(228, 231, 238);
+            _box.BorderStyle = BorderStyle.FixedSingle;
+            Controls.Add(_box);
+
+            Label hint = new Label();
+            hint.Text = "格式：Alt+Shift+Q / Ctrl+Alt+Q（修饰键 + 主键）";
+            hint.AutoSize = false;
+            hint.Size = new Size(340, 18);
+            hint.Location = new Point(16, 70);
+            hint.ForeColor = Color.FromArgb(150, 156, 168);
+            hint.Font = new Font("Microsoft YaHei UI", 8.5f);
+            Controls.Add(hint);
+
+            // Same strip as the hint: validation errors replace the format reminder instead of
+            // appearing somewhere the user is not looking.
+            _msg.AutoSize = false;
+            _msg.Size = new Size(340, 18);
+            _msg.Location = new Point(16, 70);
+            _msg.ForeColor = Color.FromArgb(255, 150, 140);
+            _msg.Font = new Font("Microsoft YaHei UI", 8.5f);
+            Controls.Add(_msg);
+            _msg.BringToFront();
+
+            Button save = MkButton("保存", 14, 120, 96);
+            save.Click += delegate { SavePressed(false); };
+            Controls.Add(save);
+
+            Button both = MkButton("保存并重启", 118, 120, 118);
+            both.Click += delegate { SavePressed(true); };
+            Controls.Add(both);
+
+            Button cancel = MkButton("取消", 244, 120, 96);
+            cancel.DialogResult = DialogResult.Cancel;
+            Controls.Add(cancel);
+
+            CancelButton = cancel;
+            AcceptButton = both;
+        }
+
+        Button MkButton(string text, int x, int y, int w)
+        {
+            Button b = new Button();
+            b.Text = text;
+            b.Size = new Size(w, 32);
+            b.Location = new Point(x, y);
+            b.FlatStyle = FlatStyle.Flat;
+            b.ForeColor = Color.FromArgb(228, 231, 238);
+            b.BackColor = Color.FromArgb(44, 46, 54);
+            return b;
+        }
+
+        void SavePressed(bool restart)
+        {
+            string text = _box.Text == null ? "" : _box.Text.Trim();
+            uint mods;
+            uint vk;
+            string error;
+            if (!Hotkey.Parse(text, out mods, out vk, out error))
+            {
+                _msg.Text = error;
+                return;
+            }
+            try
+            {
+                Config.SaveHotkey(text);
+            }
+            catch (Exception ex)
+            {
+                _msg.Text = "写入失败：" + ex.GetType().Name;
+                return;
+            }
+            Store.LogStartup("settings: hotkey=" + text + " restart=" + (restart ? "yes" : "no"));
+            Saved = text;
+            RestartRequested = restart;
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+    }
+
     class Drawer : Form
     {
         const int WM_NCHITTEST = 0x0084;
@@ -2925,6 +3249,7 @@ namespace QuoteStack
 
         readonly QuoteListView _list = new QuoteListView();
         readonly IntPtr _target;
+        GearBubble _gear;
 
         public Drawer(IntPtr target)
         {
@@ -2959,6 +3284,8 @@ namespace QuoteStack
 
         public event EventHandler DeleteRequested;
 
+        public event EventHandler SettingsRequested;
+
         public IntPtr TargetWindow { get { return _target; } }
 
         public QuoteListView ListView { get { return _list; } }
@@ -2969,11 +3296,58 @@ namespace QuoteStack
             int w = Math.Max(MinW, Width);
             int h = Math.Max(MinH, Height);
             if (w != Width || h != Height) Size = new Size(w, h);
+            SyncGear();
+        }
+
+        protected override void OnMove(EventArgs e)
+        {
+            base.OnMove(e);
+            SyncGear();
+        }
+
+        // The gear is hidden with the panel, not closed: PerformInsert hides the drawer for the
+        // paste and shows it again, and the button has to come back with it.
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            base.OnVisibleChanged(e);
+            if (_gear == null) return;
+            if (Visible) ShowGear();
+            else _gear.Hide();
+        }
+
+        void ShowGear()
+        {
+            if (_gear == null)
+            {
+                _gear = new GearBubble();
+                _gear.Clicked += delegate
+                {
+                    EventHandler h = SettingsRequested;
+                    if (h != null) h(this, EventArgs.Empty);
+                };
+            }
+            _gear.Show();
+            SyncGear();
+        }
+
+        void SyncGear()
+        {
+            if (_gear == null || _gear.IsDisposed) return;
+            // Outside the left edge by default; if the panel is hard against the left side of the
+            // screen there is no room there, so it tucks just inside instead of hanging off-screen.
+            int x = Left - _gear.Width - 6;
+            int y = Top + (Height - _gear.Height) / 2;
+            Rectangle wa = Screen.FromControl(this).WorkingArea;
+            if (x < wa.Left) x = Left + 8;
+            if (y < wa.Top) y = wa.Top;
+            if (y + _gear.Height > wa.Bottom) y = wa.Bottom - _gear.Height;
+            _gear.Location = new Point(x, y);
         }
 
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            ShowGear();
             _list.Focus();
         }
 
@@ -2982,6 +3356,12 @@ namespace QuoteStack
         {
             if (WindowState == FormWindowState.Normal && Width >= MinW && Height >= MinH)
                 Config.SaveDrawerSize(Width, Height);
+            if (_gear != null)
+            {
+                _gear.Hide();
+                _gear.Dispose();
+                _gear = null;
+            }
             base.OnFormClosing(e);
         }
 

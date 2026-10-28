@@ -79,13 +79,20 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 `%APPDATA%\quote-stack\config.json`
 
 ```json
-{ "hotkey": "Alt+Shift+Q" }
+{ "hotkey": "Alt+Shift+Q", "drawerW": "320", "drawerH": "360" }
 ```
+
+**改热键不用再手改文件**：打开抽屉后左侧会浮出一个小圆形齿轮按钮，点它弹出设置面板：
+
+- `保存` —— 写入 `config.json`，下次启动生效（小条提示「热键已保存 · 重启后生效」）
+- `保存并重启` —— 先释放旧热键、启动新实例、确认新实例活着，再退出自己；新实例没起来就保留当前进程并提示，不会留下一个什么都没在跑的局面
+- 面板里格式写错会当场报错、**不写文件**：`Q` → 至少需要一个修饰键和一个主键；`Hyper+Q` → 不认识的修饰键；`Win+Q` → 不允许单独使用 Win 组合
+
+命令行/文件路径仍然可用（托盘「打开配置」或 `app/SETKEY.cmd`）：
 
 - 默认写的是 `Alt+Q`，但本机该组合常被其它软件占用（`RegisterHotKey` 返回 1409）
 - 启动时注册失败会写 `startup.log` 并弹出提示后退出，**不会自动改键**
-- 改完直接重启程序生效；`app/SETKEY.cmd` 可以一键写成 `Alt+Shift+Q`
-- 支持格式：修饰键 `Alt`/`Ctrl`/`Shift`/`Win` + 主键 `A-Z`、`0-9`、`F1-F24`；必须带修饰键
+- 支持格式：修饰键 `Alt`/`Ctrl`/`Shift`/`Win` + 主键 `A-Z`、`0-9`、`F1-F24`；必须带修饰键且不能只用 `Win`
 
 ## 数据位置
 
