@@ -82,11 +82,11 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 { "hotkey": "Alt+Shift+Q", "drawerW": "320", "drawerH": "360" }
 ```
 
-**改热键不用再手改文件**：打开抽屉后左侧会浮出一个小圆形齿轮按钮，点它弹出设置面板：
+**改热键不用再手改文件**：打开抽屉后左侧会浮出一个小圆形齿轮按钮，点它弹出设置面板。热键是**按出来的**、不是打出来的——点一下输入框，直接按 `Ctrl+Alt+Q` 这样的组合，框里会显示录到的键：
 
 - `保存` —— 写入 `config.json`，下次启动生效（小条提示「热键已保存 · 重启后生效」）
 - `保存并重启` —— 先**试注册**新组合：注册不上就当场提示并保留原热键，**不会去启动一个注定失败的实例**；注册得上才启动新实例，并等新实例在 `startup.log` 里写出 `hotkey-registered: <组合>` 才退出自己。新实例没起来会被关掉、原热键自动恢复
-- 面板里格式写错会当场报错、**不写文件**：`Q` → 至少需要一个修饰键和一个主键；`Hyper+Q` → 不认识的修饰键；`Win+Q` → 不允许单独使用 Win 组合
+- 录制规则：至少一个修饰键（`Ctrl`/`Shift`/`Alt`）+ 主键 `A-Z`、`0-9`、`F1-F24`；`Esc` 取消（恢复原值）、`Delete`/`Backspace` 清空；缺修饰键、不认识的键、单独的 `Win` 组合都会当场提示且**不写文件**
 
 命令行/文件路径仍然可用（托盘「打开配置」或 `app/SETKEY.cmd`）：
 
@@ -101,7 +101,7 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 | `%APPDATA%\quote-stack\stack.ndjson` | 引用记录，一行一条 JSON（`id`/`ts`/`source`/`title`/`text`/`url`）；最多保留 500 条，超出后自动删除最旧的 |
 | `%APPDATA%\quote-stack\used.ndjson` | 已插入过哪些引用（`ts`/`key`，`key` 即记录 `id`；v1 旧记录回退为文本哈希），供「清理已引用」使用；记录被删除时同步清理 |
 | `%APPDATA%\quote-stack\config.json` | 热键配置（`hotkey`）与抽屉尺寸记忆（`drawerW`/`drawerH`，字符串形式） |
-| `%APPDATA%\quote-stack\startup.log` | 启动与采集诊断，**只记计数与错误码，不记正文、不记网址、不记文件路径** |
+| `%APPDATA%\quote-stack\startup.log` | 启动与采集诊断，**只记计数与错误码，不记正文、不记网址、不记文件路径**；超过 512 KB 自动改名为 `startup.log.1`（只留一份）并重开新文件 |
 | `%LOCALAPPDATA%\qsapp\QuoteStack.exe` | 安装后的程序本体 |
 
 删除 `%APPDATA%\quote-stack\` 与 `%LOCALAPPDATA%\qsapp\` 即完成卸载（没有注册表项、没有自启项）。

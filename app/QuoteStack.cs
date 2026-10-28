@@ -72,6 +72,57 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
+                // Test-only hook: the key-capture mapping behind the settings box, so a wrong
+                // chord (missing modifier, unsupported key) is visible without opening a window.
+                if (a == "--keytest" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    StringBuilder sb = new StringBuilder();
+                    Keys[] keys = new Keys[] { Keys.Q, Keys.F2, Keys.D1, Keys.Space, Keys.ControlKey, Keys.None };
+                    Keys[] mods = new Keys[]
+                    {
+                        Keys.None,
+                        Keys.Control | Keys.Alt,
+                        Keys.Alt,
+                        Keys.None,
+                        Keys.Control,
+                        Keys.Alt | Keys.Shift
+                    };
+                    for (int k = 0; k < keys.Length; k++)
+                    {
+                        string text;
+                        string error;
+                        bool ok = Hotkey.FromKeys(keys[k], mods[k], out text, out error);
+                        sb.Append(k).Append(" key=").Append(keys[k].ToString())
+                          .Append(" mods=").Append(mods[k].ToString())
+                          .Append(" => ").Append(ok ? text : "reject: " + error).Append("\n");
+                    }
+                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
+                // Test-only hook: the log cap. Writes past the limit, appends once more, and reports
+                // whether the old file was rotated to startup.log.1 instead of growing forever.
+                if (a == "--logrotatetest" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    StringBuilder sb = new StringBuilder();
+                    string path = Store.LogPath;
+                    StringBuilder bulk = new StringBuilder();
+                    while (bulk.Length < Store.LogLimitBytes + 4096)
+                        bulk.Append("x").Append(new string('y', 250)).Append("\n");
+                    File.WriteAllText(path, bulk.ToString(), new UTF8Encoding(false));
+                    sb.Append("before=").Append(new FileInfo(path).Length).Append("\n");
+                    Store.LogStartup("rotate-canary");
+                    sb.Append("after=").Append(new FileInfo(path).Length).Append("\n");
+                    string old = path + ".1";
+                    sb.Append("rotated=").Append(File.Exists(old) ? "yes" : "no").Append("\n");
+                    sb.Append("rotated-len=").Append(File.Exists(old) ? new FileInfo(old).Length.ToString() : "-").Append("\n");
+                    sb.Append("tail=").Append(File.ReadAllText(path, new UTF8Encoding(false)).Trim()).Append("\n");
+                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
                 // Test-only hook: the two primitives behind "save and restart" — the fallback
                 // probe (which combos can actually be registered right now) and the log watermark
                 // reader (did the replacement report success?). Neither one needs a window.
@@ -862,6 +913,7 @@ namespace QuoteStack
             try
             {
                 Directory.CreateDirectory(DirPath);
+                RotateLogIfNeeded();
                 string line = DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:ss") + " " + message + "\n";
                 using (var fs = new FileStream(Path.Combine(DirPath, "startup.log"), FileMode.Append, FileAccess.Write, FileShare.Read))
                 using (var sw = new StreamWriter(fs, Utf8))
@@ -869,6 +921,26 @@ namespace QuoteStack
                     sw.Write(line);
                     sw.Flush();
                 }
+            }
+            catch { }
+        }
+
+        // The log is append-only and written on every capture, so without a cap it grows forever.
+        // Past 512 KB it is renamed to startup.log.1 (one generation kept) and a fresh log starts.
+        // A rename inside one directory is atomic, so a crash here leaves either the old file or
+        // the rotated one, never a half file.
+        public const long LogLimitBytes = 512 * 1024;
+
+        public static void RotateLogIfNeeded()
+        {
+            try
+            {
+                string path = LogPath;
+                var fi = new FileInfo(path);
+                if (!fi.Exists || fi.Length <= LogLimitBytes) return;
+                string old = path + ".1";
+                if (File.Exists(old)) File.Delete(old);
+                File.Move(path, old);
             }
             catch { }
         }
@@ -1157,6 +1229,46 @@ namespace QuoteStack
                 return false;
             }
             return true;
+        }
+
+        // Turns a captured key press into the same text form Parse() accepts, so the settings panel
+        // can record a chord instead of asking the user to type it. Kept separate from the control
+        // so it can be exercised without a window.
+        public static bool FromKeys(Keys keyCode, Keys modifiers, out string text, out string error)
+        {
+            text = null;
+            error = null;
+            if (keyCode == Keys.None)
+            {
+                error = "没有识别到按键";
+                return false;
+            }
+            string name = KeyName(keyCode);
+            if (name == null)
+            {
+                error = "这个键暂不支持（只用 A-Z、0-9、F1-F24）";
+                return false;
+            }
+            string mods = "";
+            if ((modifiers & Keys.Control) != 0) mods += "Ctrl+";
+            if ((modifiers & Keys.Shift) != 0) mods += "Shift+";
+            if ((modifiers & Keys.Alt) != 0) mods += "Alt+";
+            if (mods.Length == 0)
+            {
+                error = "需要至少一个修饰键（Ctrl / Shift / Alt）";
+                return false;
+            }
+            text = mods + name;
+            return true;
+        }
+
+        public static string KeyName(Keys k)
+        {
+            int v = (int)k;
+            if (v >= (int)Keys.A && v <= (int)Keys.Z) return ((char)('A' + (v - (int)Keys.A))).ToString();
+            if (v >= (int)Keys.D0 && v <= (int)Keys.D9) return ((char)('0' + (v - (int)Keys.D0))).ToString();
+            if (v >= (int)Keys.F1 && v <= (int)Keys.F24) return "F" + (v - (int)Keys.F1 + 1);
+            return null;
         }
 
         static bool ParseKey(string p, out uint vk)
@@ -1553,7 +1665,9 @@ namespace QuoteStack
         // other software belong here; a candidate that parses but never registers is wasted time.
         static readonly string[] FallbackHotkeys = new string[]
         {
-            "Alt+Shift+Q", "Ctrl+Alt+Q", "Ctrl+Shift+Q", "Alt+D", "Ctrl+Alt+1"
+            // Alt+D is deliberately absent: in browsers it focuses the address bar, so taking it
+            // would steal a key people use constantly.
+            "Alt+Shift+Q", "Ctrl+Alt+Q", "Ctrl+Shift+Q", "Ctrl+Alt+1"
         };
 
         // Registers each candidate in turn, unregisters it again and returns the first one that
@@ -3310,9 +3424,101 @@ namespace QuoteStack
     // writes the file and can restart the app, releasing the old hotkey registration first —
     // a replacement instance on the same combo would otherwise fail with
     // ERROR_HOTKEY_ALREADY_REGISTERED (1409).
+    // Records the chord instead of asking the user to type it: click into the box, press the keys,
+    // done. A read-only TextBox is used so it looks like the rest of the panel and the value stays
+    // selectable; the capture happens in OnKeyDown. Escape restores the previous chord, Delete
+    // clears it, and a rejected press shows the reason instead of silently erasing the old value.
+    class HotkeyBox : TextBox
+    {
+        string _value = "";
+        string _backup;
+        bool _capturing;
+
+        public HotkeyBox()
+        {
+            ReadOnly = true;
+            ShortcutsEnabled = false;
+            Cursor = Cursors.Hand;
+            TabStop = true;
+        }
+
+        public string Value
+        {
+            get { return _value; }
+            set
+            {
+                _value = value == null ? "" : value;
+                _backup = _value;
+                _capturing = false;
+                Text = _value;
+            }
+        }
+
+        protected override void OnEnter(EventArgs e)
+        {
+            base.OnEnter(e);
+            if (_capturing) return;
+            _capturing = true;
+            _backup = _value;
+            Text = "请按下组合键…（Esc 取消、Delete 清空）";
+            SelectAll();
+        }
+
+        protected override void OnLeave(EventArgs e)
+        {
+            base.OnLeave(e);
+            _capturing = false;
+            Text = _value;
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+
+            Keys k = e.KeyCode;
+            if (k == Keys.Escape)
+            {
+                _value = _backup == null ? _value : _backup;
+                EndCapture();
+                return;
+            }
+            if (k == Keys.Back || k == Keys.Delete)
+            {
+                _value = "";
+                EndCapture();
+                return;
+            }
+            if (k == Keys.ControlKey || k == Keys.ShiftKey || k == Keys.Menu || k == Keys.LWin || k == Keys.RWin)
+            {
+                Text = "按住修饰键，再按主键…";
+                return;
+            }
+
+            string text;
+            string error;
+            if (!Hotkey.FromKeys(k, e.Modifiers, out text, out error))
+            {
+                Text = error;
+                return;
+            }
+            _value = text;
+            EndCapture();
+        }
+
+        void EndCapture()
+        {
+            _capturing = false;
+            Text = _value;
+            if (ValueCaptured != null) ValueCaptured(this, EventArgs.Empty);
+        }
+
+        public event EventHandler ValueCaptured;
+    }
+
     class SettingsForm : Form
     {
-        readonly TextBox _box = new TextBox();
+        readonly HotkeyBox _box = new HotkeyBox();
         readonly Label _msg = new Label();
 
         public string Saved { get; private set; }
@@ -3339,7 +3545,7 @@ namespace QuoteStack
             caption.Location = new Point(16, 14);
             Controls.Add(caption);
 
-            _box.Text = current == null ? "" : current;
+            _box.Value = current == null ? "" : current;
             _box.Location = new Point(16, 38);
             _box.Size = new Size(340, 26);
             _box.BackColor = Color.FromArgb(40, 42, 48);
@@ -3348,7 +3554,7 @@ namespace QuoteStack
             Controls.Add(_box);
 
             Label hint = new Label();
-            hint.Text = "格式：Alt+Shift+Q / Ctrl+Alt+Q（修饰键 + 主键）";
+            hint.Text = "点这里，然后直接按组合键（修饰键 + 主键；Esc 取消、Delete 清空）";
             hint.AutoSize = false;
             hint.Size = new Size(340, 18);
             hint.Location = new Point(16, 70);
@@ -3396,7 +3602,7 @@ namespace QuoteStack
 
         void SavePressed(bool restart)
         {
-            string text = _box.Text == null ? "" : _box.Text.Trim();
+            string text = _box.Value == null ? "" : _box.Value.Trim();
             uint mods;
             uint vk;
             string error;

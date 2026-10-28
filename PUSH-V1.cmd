@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-echo ==== Quote Stack v1.11  uploading to GitHub ====
+echo ==== Quote Stack v1.12  uploading to GitHub ====
 echo.
 
 git remote get-url origin 1>nul 2>nul
