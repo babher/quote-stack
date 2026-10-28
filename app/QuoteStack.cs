@@ -325,6 +325,38 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
+                // Test-only hook for the live refresh: ticks two rows out of order, expands one,
+                // appends a third record while the list exists, then runs ReloadPreserving and
+                // prints what survived the rebuild.
+                if (a == "--refresh" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    string err3;
+                    StringBuilder sb3 = new StringBuilder();
+                    Store.Append("RF-A", "msedge.exe", "t", "", out err3);
+                    Store.Append("RF-B", "msedge.exe", "t", "", out err3);
+                    using (QuoteListView lv = new QuoteListView())
+                    {
+                        lv.Reload();
+                        sb3.Append("before-count=").Append(lv.Count).Append("\n");
+                        lv.Toggle(1); // newest first: index 0 is RF-B, index 1 is RF-A
+                        lv.Toggle(0);
+                        sb3.Append("before-picks=");
+                        foreach (Record r in lv.Checked()) sb3.Append(r.Text).Append(",");
+                        sb3.Append("\n");
+                        Store.Append("RF-C", "msedge.exe", "t", "", out err3);
+                        lv.ReloadPreserving();
+                        sb3.Append("after-count=").Append(lv.Count).Append("\n");
+                        sb3.Append("after-picks=");
+                        foreach (Record r in lv.Checked()) sb3.Append(r.Text).Append(",");
+                        sb3.Append("\n");
+                        sb3.Append("after-first=").Append(lv.Sample(0) == null ? "-" : lv.Sample(0).Text).Append("\n");
+                        sb3.Append("after-count-1000=").Append(Store.Count()).Append("\n");
+                    }
+                    File.WriteAllText(outPath, sb3.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
             }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
@@ -1310,6 +1342,11 @@ namespace QuoteStack
             {
                 _count = Store.Count();
                 if (_count < 0) _count = 0;
+                // The drawer can be open while the user captures again. Refresh it in place so
+                // the new quote appears without closing the drawer; ticks, expanded rows and
+                // scroll position are carried over (see QuoteListView.ReloadPreserving).
+                if (_drawer != null && !_drawer.IsDisposed && _drawer.Visible)
+                    _drawer.ListView.ReloadPreserving();
                 _preview = r.Preview;
                 _status = null;
                 _flashKind = KindOk;
@@ -1953,6 +1990,62 @@ namespace QuoteStack
         }
 
         public int Count { get { return _items.Count; } }
+
+        // Same as Reload, but for a list the user is looking at: the tick order, which rows
+        // are expanded, the focused row and the scroll offset all survive a new capture.
+        // Identity is the record key, never the row index, because a new capture shifts every
+        // index by one.
+        public void ReloadPreserving()
+        {
+            List<Record> fresh = Records.Load(int.MaxValue);
+            // A read that suddenly returns nothing while rows are on screen is far more likely
+            // to be a locked/renamed file than the user deleting everything: keep what is
+            // shown instead of blanking the drawer.
+            if (fresh.Count == 0 && _items.Count > 0)
+            {
+                SetHint("刷新失败：读不到引用文件");
+                return;
+            }
+
+            List<string> pickKeys = new List<string>(_picks.Count);
+            foreach (Record r in _picks) pickKeys.Add(r.Key);
+            HashSet<string> openKeys = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < _items.Count && i < _open.Length; i++)
+                if (_open[i]) openKeys.Add(_items[i].Key);
+            string selKey = (_sel >= 0 && _sel < _items.Count) ? _items[_sel].Key : null;
+            int scroll = _scroll;
+
+            _items = fresh;
+            _open = new bool[fresh.Count];
+            _checked = new bool[fresh.Count];
+            _picks.Clear();
+            _sel = fresh.Count > 0 ? 0 : -1;
+            _hint = null;
+
+            // Re-tick in the original pick order: Toggle appends to _picks, so the insert
+            // order the user built up is reproduced exactly.
+            for (int k = 0; k < pickKeys.Count; k++)
+            {
+                int idx = IndexOfKey(pickKeys[k]);
+                if (idx >= 0) Toggle(idx);
+            }
+            for (int i = 0; i < fresh.Count; i++)
+                if (openKeys.Contains(fresh[i].Key)) _open[i] = true;
+            if (selKey != null)
+            {
+                int s = IndexOfKey(selKey);
+                if (s >= 0) _sel = s;
+            }
+            _scroll = scroll;
+            Invalidate();
+        }
+
+        int IndexOfKey(string key)
+        {
+            for (int i = 0; i < _items.Count; i++)
+                if (string.Equals(_items[i].Key, key, StringComparison.Ordinal)) return i;
+            return -1;
+        }
 
         // The only place a tick changes, so the pick order can never drift from the ticks.
         public void Toggle(int i)
