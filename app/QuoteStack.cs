@@ -72,6 +72,41 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
+                // Test-only hook: the two primitives behind "save and restart" — the fallback
+                // probe (which combos can actually be registered right now) and the log watermark
+                // reader (did the replacement report success?). Neither one needs a window.
+                if (a == "--restarttest" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    StringBuilder sb = new StringBuilder();
+                    string[] cands = new string[] { "Alt+Q", "Alt+Shift+Q", "Ctrl+Alt+Q", "Ctrl+Shift+Q", "Alt+D", "Ctrl+Alt+1" };
+                    string firstFree = null;
+                    foreach (string cand in cands)
+                    {
+                        uint m, k;
+                        string e;
+                        bool parsed = Hotkey.Parse(cand, out m, out k, out e);
+                        bool reg = false;
+                        if (parsed)
+                        {
+                            reg = Native.RegisterHotKey(IntPtr.Zero, 9100, m, k);
+                            if (reg) Native.UnregisterHotKey(IntPtr.Zero, 9100);
+                        }
+                        sb.Append("probe ").Append(cand)
+                          .Append(" parsed=").Append(parsed ? "yes" : e)
+                          .Append(" register=").Append(reg ? "ok" : "taken").Append("\n");
+                        if (reg && firstFree == null && cand != "Alt+Q") firstFree = cand;
+                    }
+                    sb.Append("first-fallback=").Append(firstFree == null ? "none" : firstFree).Append("\n");
+                    long mark = Store.LogLength();
+                    sb.Append("marker-before=").Append(Store.LogHasAfter(mark, "ZZ-MARKER", 20000) ? "yes" : "no").Append("\n");
+                    Store.LogStartup("ZZ-MARKER restarttest");
+                    sb.Append("marker-after=").Append(Store.LogHasAfter(mark, "ZZ-MARKER", 20000) ? "yes" : "no").Append("\n");
+                    sb.Append("marker-miss=").Append(Store.LogHasAfter(mark, "NOPE-NOT-THERE", 20000) ? "yes" : "no").Append("\n");
+                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
                 if (a == "--selftest")
                 {
                     Environment.Exit(Store.SelfTest());
@@ -838,6 +873,45 @@ namespace QuoteStack
             catch { }
         }
 
+        public static string LogPath
+        {
+            get { return Path.Combine(DirPath, "startup.log"); }
+        }
+
+        // Length of the log right now. Used as a watermark: whatever a replacement instance
+        // writes after this offset is the only evidence about it that counts.
+        public static long LogLength()
+        {
+            try
+            {
+                FileInfo fi = new FileInfo(LogPath);
+                return fi.Exists ? fi.Length : 0;
+            }
+            catch { return 0; }
+        }
+
+        // True when a marker appears in the bytes appended after `offset`. Reading only the tail
+        // keeps this cheap even when the log has grown for weeks.
+        public static bool LogHasAfter(long offset, string marker, int maxBytes)
+        {
+            try
+            {
+                if (!File.Exists(LogPath)) return false;
+                using (FileStream fs = new FileStream(LogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    long len = fs.Length;
+                    if (len <= offset) return false;
+                    long start = Math.Max(offset, len - maxBytes);
+                    fs.Seek(start, SeekOrigin.Begin);
+                    byte[] buf = new byte[len - start];
+                    int read = fs.Read(buf, 0, buf.Length);
+                    string text = Encoding.UTF8.GetString(buf, 0, read);
+                    return text.Contains(marker);
+                }
+            }
+            catch { return false; }
+        }
+
         // Writes one fixed record into the production file, then exits.
         // Used only by manual verification; it is tagged source=selftest so it is
         // distinguishable from real captures.
@@ -1295,6 +1369,9 @@ namespace QuoteStack
         readonly NotifyIcon _tray = new NotifyIcon();
 
         int _plusAt = -1;
+        // The combo this instance actually holds, kept so a refused restart can put it back.
+        uint _regMods;
+        uint _regVk;
 
         int _count;
         string _preview;
@@ -1424,20 +1501,89 @@ namespace QuoteStack
 
             if (!Native.RegisterHotKey(Handle, HOTKEY_ID, mods, vk))
             {
-                Store.LogStartup(HotkeyFailureLine(wanted));
-                MessageBox.Show(
-                    "热键 " + wanted + " 注册失败，可能已被其他程序占用。\n\n" +
-                    "请把配置文件里的 hotkey 改成别的组合（例如 Alt+Shift+Q），保存后重新启动：\n" + _cfgPath,
-                    "QuoteStack",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-                Environment.Exit(2);
+                int refused = Marshal.GetLastWin32Error();
+                Store.LogStartup(HotkeyFailureLine(wanted) + " err=" + refused);
+                // A refused combo used to mean "dialog, then exit" — which left nothing running
+                // at all (the user then re-launched and hit the same wall). Instead walk a short
+                // list of combos that are usually free, keep the first that registers, and write
+                // it back so the next launch starts on a key that works.
+                string fallback = TryFallbackHotkey(wanted);
+                if (fallback == null)
+                {
+                    Store.LogStartup("hotkey-fallback: none of the candidates registered");
+                    MessageBox.Show(
+                        "热键 " + wanted + " 注册失败（错误码 " + refused + "），备用组合也都被占用。\n\n" +
+                        "请打开配置文件改一个没被占用的组合，保存后重新启动：\n" + _cfgPath,
+                        "QuoteStack",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    Environment.Exit(2);
+                }
+                uint fmods;
+                uint fvk;
+                string ferr;
+                Hotkey.Parse(fallback, out fmods, out fvk, out ferr);
+                if (!Native.RegisterHotKey(Handle, HOTKEY_ID, fmods, fvk))
+                {
+                    // Losing the race between the probe and the real registration is remote, but
+                    // it would still leave nothing running, so it is reported rather than ignored.
+                    Store.LogStartup(HotkeyFailureLine(fallback) + " err=" + Marshal.GetLastWin32Error());
+                    MessageBox.Show("热键 " + fallback + " 在写入配置后被别的程序抢走了，请重新启动。",
+                        "QuoteStack", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Environment.Exit(2);
+                }
+                wanted = fallback;
+                mods = fmods;
+                vk = fvk;
+                _hint = "原热键被占用，已改用 " + fallback;
+            }
+            else
+            {
+                _hint = "热键 " + wanted;
             }
 
-            _hint = "热键 " + wanted;
+            _regMods = mods;
+            _regVk = vk;
             Store.LogStartup("hotkey-registered: " + wanted);
             _hintTimer.Start();
             Invalidate();
+        }
+
+        // Ordered candidates for the refused-combo path. Only combos that are rarely bound by
+        // other software belong here; a candidate that parses but never registers is wasted time.
+        static readonly string[] FallbackHotkeys = new string[]
+        {
+            "Alt+Shift+Q", "Ctrl+Alt+Q", "Ctrl+Shift+Q", "Alt+D", "Ctrl+Alt+1"
+        };
+
+        // Registers each candidate in turn, unregisters it again and returns the first one that
+        // worked. The caller registers it for real, so this is a probe, not the registration.
+        string TryFallbackHotkey(string refused)
+        {
+            for (int i = 0; i < FallbackHotkeys.Length; i++)
+            {
+                string cand = FallbackHotkeys[i];
+                if (string.Equals(cand, refused, StringComparison.OrdinalIgnoreCase)) continue;
+                uint m;
+                uint k;
+                string err;
+                if (!Hotkey.Parse(cand, out m, out k, out err)) continue;
+                if (!Native.RegisterHotKey(Handle, HOTKEY_ID, m, k)) continue;
+                Native.UnregisterHotKey(Handle, HOTKEY_ID);
+                Store.LogStartup("hotkey-fallback: " + refused + " -> " + cand);
+                try
+                {
+                    Config.SaveHotkey(cand);
+                    Store.LogStartup("hotkey-fallback-written: " + cand);
+                }
+                catch (Exception ex)
+                {
+                    // Not fatal for this session; the key still works until the next launch.
+                    Store.LogStartup("hotkey-fallback-write-failed: " + ex.GetType().Name);
+                }
+                return cand;
+            }
+            return null;
         }
 
         void PlaceBottomRight()
@@ -1679,44 +1825,94 @@ namespace QuoteStack
             }
         }
 
-        // Starts a fresh instance and only then leaves. The old registration is released first:
-        // the replacement would otherwise be refused with ERROR_HOTKEY_ALREADY_REGISTERED (1409)
-        // for as long as this process still holds the combo.
+        // Replaces the running instance with one that reads the newly saved hotkey. The combo is
+        // probed first: a replacement that cannot register ends up sitting in a modal dialog
+        // looking alive, and the old instance would then exit on that false signal (seen 19:22 —
+        // Alt+Q was already taken by another program, both instances ended up gone).
         void RestartApp(string hotkey)
         {
-            bool started = false;
+            uint mods;
+            uint vk;
+            string error;
+            if (!Hotkey.Parse(hotkey, out mods, out vk, out error))
+            {
+                MessageBox.Show(this, "热键格式不对：" + error, "QuoteStack",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // 1) Can this combo be registered at all? Ask before disturbing the running instance.
+            Native.UnregisterHotKey(Handle, HOTKEY_ID);
+            if (!Native.RegisterHotKey(Handle, HOTKEY_ID, mods, vk))
+            {
+                int refused = Marshal.GetLastWin32Error();
+                Native.RegisterHotKey(Handle, HOTKEY_ID, _regMods, _regVk);
+                Store.LogStartup("restart-abort: " + hotkey + " taken err=" + refused);
+                MessageBox.Show(this,
+                    "热键 " + hotkey + " 无法注册（错误码 " + refused + "），可能已被其他程序占用。\n原热键保持不变。",
+                    "QuoteStack", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            Native.UnregisterHotKey(Handle, HOTKEY_ID);
+            Store.LogStartup("restart: probe-ok " + hotkey);
+
+            // 2) Start the replacement and wait for it to *report* a successful registration.
+            long watermark = Store.LogLength();
+            Process started = null;
             try
             {
-                Native.UnregisterHotKey(Handle, HOTKEY_ID);
                 ProcessStartInfo psi = new ProcessStartInfo(Application.ExecutablePath);
                 psi.UseShellExecute = false;
                 psi.WorkingDirectory = Path.GetDirectoryName(Application.ExecutablePath);
-                Process p = Process.Start(psi);
-                // A too-early exit means the replacement refused to start (hotkey taken, config
-                // unreadable). Then this instance keeps its old key instead of leaving the user
-                // with nothing running.
-                Thread.Sleep(800);
-                started = p != null && !p.HasExited;
+                started = Process.Start(psi);
             }
             catch (Exception ex)
             {
                 Store.LogStartup("restart-failed: " + ex.GetType().Name);
+                Native.RegisterHotKey(Handle, HOTKEY_ID, _regMods, _regVk);
+                MessageBox.Show(this, "重启失败：新实例没能启动。原热键保持不变。",
+                    "QuoteStack", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
             }
-            if (started)
+
+            string verdict = WaitRestartVerdict(watermark, hotkey, started, 6000);
+            if (verdict == "ok")
             {
-                Store.LogStartup("restart: hotkey=" + hotkey);
+                Store.LogStartup("restart: " + hotkey);
                 Close();
                 return;
             }
 
-            Store.LogStartup("restart-failed: replacement did not survive");
-            uint mods;
-            uint vk;
-            string error;
-            if (Hotkey.Parse(Config.ReadHotkey(), out mods, out vk, out error))
-                Native.RegisterHotKey(Handle, HOTKEY_ID, mods, vk);
-            MessageBox.Show(this, "重启失败：新实例没能启动。请手动运行 RUN.cmd。",
+            // 3) The replacement did not come up. Take it down (it may be stuck on a dialog) and
+            // keep serving on the old combo, rather than leaving the user with nothing running.
+            if (started != null && !started.HasExited)
+            {
+                try { started.Kill(); } catch { }
+            }
+            Native.RegisterHotKey(Handle, HOTKEY_ID, _regMods, _regVk);
+            Store.LogStartup("restart-failed: " + verdict + " " + hotkey);
+            MessageBox.Show(this,
+                "新热键 " + hotkey + " 没能启用（" +
+                (verdict == "reported-failure" ? "新实例报告注册失败" : "等不到新实例注册成功") +
+                "）。\n原热键已恢复。",
                 "QuoteStack", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        // Waits for the replacement's own log line. Process liveness proves nothing here: an
+        // instance that failed to register sits in a MessageBox and looks perfectly healthy.
+        string WaitRestartVerdict(long watermark, string hotkey, Process started, int timeoutMs)
+        {
+            string ok = "hotkey-registered: " + hotkey;
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (Store.LogHasAfter(watermark, ok, 20000)) return "ok";
+                if (Store.LogHasAfter(watermark, "hotkey-register-failed", 20000)) return "reported-failure";
+                if (Store.LogHasAfter(watermark, "config-invalid", 20000)) return "reported-failure";
+                if (started != null && started.HasExited) return "exited";
+                Thread.Sleep(150);
+            }
+            return "timeout";
         }
 
         // Deletes exactly the ticked quotes, straight from the drawer's bottom bar. Same
