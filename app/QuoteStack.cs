@@ -179,6 +179,40 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
+                // Test-only hook: the bottom-bar "全选" + "删除 N 项" path, headless. It does
+                // not click pixels; it calls the very methods those two controls call.
+                if (a == "--delticktest" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    string err;
+                    StringBuilder sb = new StringBuilder();
+                    for (int k = 0; k < 4; k++)
+                        Store.Append("DEL-" + (char)('A' + k), "msedge.exe", "t", "", out err);
+                    using (QuoteListView lv = new QuoteListView())
+                    {
+                        lv.Reload();
+                        sb.Append("loaded=").Append(lv.Count).Append("\n");
+                        lv.ToggleSelectAll();
+                        sb.Append("after-select-all=");
+                        foreach (Record r in lv.Checked()) sb.Append(r.Text).Append(",");
+                        sb.Append("\n");
+                        HashSet<string> drop = new HashSet<string>(StringComparer.Ordinal);
+                        foreach (Record r in lv.Checked()) drop.Add(Store.Hash12(r.Text));
+                        int removed;
+                        bool ok = Store.DeleteByHash(drop, out removed, out err);
+                        sb.Append("delete-ok=").Append(ok).Append(" removed=").Append(removed)
+                          .Append(" error=").Append(err == null ? "-" : err).Append("\n");
+                        sb.Append("after-delete=").Append(Store.Count()).Append("\n");
+                        lv.Reload();
+                        sb.Append("reloaded=").Append(lv.Count).Append("\n");
+                        lv.ToggleSelectAll();
+                        sb.Append("select-all-on-empty=").Append(lv.Checked().Count).Append("\n");
+                        sb.Append("tmp-left=").Append(File.Exists(Store.FilePath + ".tmp") ? "yes" : "no").Append("\n");
+                    }
+                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
             }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
@@ -1156,6 +1190,7 @@ namespace QuoteStack
             _drawer = new Drawer(target);
             _drawer.FormClosed += delegate { _drawer = null; Invalidate(); };
             _drawer.CleanupRequested += delegate { OpenCleanup(); };
+            _drawer.DeleteRequested += delegate { DeleteTicked(); };
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
             int w = 380;
             int h = Math.Min(520, wa.Height - 96);
@@ -1203,6 +1238,38 @@ namespace QuoteStack
                     _drawer.ListView.Focus();
                 }
             }
+        }
+
+        // Deletes exactly the ticked quotes, straight from the drawer's bottom bar. Same
+        // atomic rewrite as the cleanup panel; the confirmation exists because there is
+        // no undo.
+        void DeleteTicked()
+        {
+            if (_drawer == null || _drawer.IsDisposed) return;
+            List<Record> picked = _drawer.ListView.Checked();
+            if (picked.Count == 0) return;
+            DialogResult ask = MessageBox.Show(_drawer,
+                "删除勾选的 " + picked.Count + " 条引用？删除后不可恢复。",
+                "确认删除", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (ask != DialogResult.Yes) return;
+
+            HashSet<string> drop = new HashSet<string>(StringComparer.Ordinal);
+            foreach (Record r in picked) drop.Add(Store.Hash12(r.Text));
+            int removed;
+            string error;
+            if (!Store.DeleteByHash(drop, out removed, out error))
+            {
+                _drawer.ListView.SetHint("删除失败：" + error);
+                return;
+            }
+            _count = Math.Max(0, Store.Count());
+            _drawer.ListView.Reload();
+            _drawer.ListView.SetHint("已删除 " + removed + " 条");
+            _status = "已删除 " + removed + " 条";
+            _flashKind = KindOk;
+            _flash.Stop();
+            _flash.Start();
+            Invalidate();
         }
 
         void PerformInsert()
@@ -1629,8 +1696,16 @@ namespace QuoteStack
 
         public event EventHandler CleanupRequested;
 
+        // Raised by the "删除 N 项" control in the bottom bar. The drawer confirms and does
+        // the actual deletion, because only the host form can own a modal dialog.
+        public event EventHandler DeleteRequested;
+
         // Hit area of the "清理已引用" label in the bottom bar; empty when hidden.
         RectangleF _clearRect;
+
+        // Hit areas of "删除 N 项" / "全选" in the bottom bar; empty when hidden.
+        RectangleF _delRect;
+        RectangleF _allRect;
 
         public QuoteListView()
         {
@@ -1677,6 +1752,20 @@ namespace QuoteStack
         public void SetHint(string hint)
         {
             _hint = hint;
+            Invalidate();
+        }
+
+        // Ticks everything; when everything is already ticked it clears instead, so the
+        // same control is useful both ways ("全选" / "取消全选").
+        public void ToggleSelectAll()
+        {
+            int n = _items.Count;
+            if (n == 0 || _checked.Length != n) return;
+            int cnt = 0;
+            for (int i = 0; i < n; i++) if (_checked[i]) cnt++;
+            bool select = cnt < n;
+            for (int i = 0; i < n; i++) if (_checked[i] != select) Toggle(i);
+            _hint = select ? ("已全选 " + n + " 条") : null;
             Invalidate();
         }
 
@@ -1978,22 +2067,43 @@ namespace QuoteStack
             using (var b = new SolidBrush(barColor))
                 g.DrawString(bar, _fBar, b, PadLeft, barY + 9f);
 
-            // Right side of the bar: opens the cleanup panel. Only shown when there is
-            // something to clean, so the bar stays quiet on a fresh stack.
+            // Right side of the bar, right to left: the cleanup panel entry (only while
+            // nothing is ticked, to keep the bar readable), "全选/取消全选", and
+            // "删除 N 项" while something is ticked.
             int usedCount = 0;
             for (int i = 0; i < n; i++) if (_items[i].Used) usedCount++;
-            if (usedCount > 0)
+            _clearRect = RectangleF.Empty;
+            _delRect = RectangleF.Empty;
+            _allRect = RectangleF.Empty;
+
+            float bx = Width - PadRight;
+            if (usedCount > 0 && cnt == 0)
             {
                 string clr = "清理已引用(" + usedCount + ")";
                 SizeF csz = g.MeasureString(clr, _fBar);
-                float cx = Width - PadRight - csz.Width;
+                bx -= csz.Width;
                 using (var b = new SolidBrush(Color.FromArgb(120, 176, 255)))
-                    g.DrawString(clr, _fBar, b, cx, barY + 9f);
-                _clearRect = new RectangleF(cx - 6f, barY + 3f, csz.Width + 12f, BottomBarH - 5f);
+                    g.DrawString(clr, _fBar, b, bx, barY + 9f);
+                _clearRect = new RectangleF(bx - 6f, barY + 3f, csz.Width + 12f, BottomBarH - 5f);
+                bx -= 14f;
             }
-            else
+
+            string all = (n > 0 && cnt == n) ? "取消全选" : "全选";
+            SizeF asz = g.MeasureString(all, _fBar);
+            bx -= asz.Width;
+            using (var b = new SolidBrush(Color.FromArgb(150, 200, 255)))
+                g.DrawString(all, _fBar, b, bx, barY + 9f);
+            _allRect = new RectangleF(bx - 6f, barY + 3f, asz.Width + 12f, BottomBarH - 5f);
+            bx -= 14f;
+
+            if (cnt > 0)
             {
-                _clearRect = RectangleF.Empty;
+                string del = "删除 " + cnt + " 项";
+                SizeF dsz = g.MeasureString(del, _fBar);
+                bx -= dsz.Width;
+                using (var b = new SolidBrush(Color.FromArgb(255, 120, 120)))
+                    g.DrawString(del, _fBar, b, bx, barY + 9f);
+                _delRect = new RectangleF(bx - 6f, barY + 3f, dsz.Width + 12f, BottomBarH - 5f);
             }
         }
 
@@ -2051,6 +2161,17 @@ namespace QuoteStack
             if (e.Y > ContentHeight)
             {
                 // The bottom bar is a control surface, not just a caption.
+                if (!_delRect.IsEmpty && _delRect.Contains(e.X, e.Y))
+                {
+                    EventHandler d = DeleteRequested;
+                    if (d != null) d(this, EventArgs.Empty);
+                    return;
+                }
+                if (!_allRect.IsEmpty && _allRect.Contains(e.X, e.Y))
+                {
+                    ToggleSelectAll();
+                    return;
+                }
                 if (!_clearRect.IsEmpty && _clearRect.Contains(e.X, e.Y))
                 {
                     EventHandler h = CleanupRequested;
@@ -2325,10 +2446,17 @@ namespace QuoteStack
                 EventHandler h = CleanupRequested;
                 if (h != null) h(this, EventArgs.Empty);
             };
+            _list.DeleteRequested += delegate
+            {
+                EventHandler h = DeleteRequested;
+                if (h != null) h(this, EventArgs.Empty);
+            };
             _list.Reload();
         }
 
         public event EventHandler CleanupRequested;
+
+        public event EventHandler DeleteRequested;
 
         public IntPtr TargetWindow { get { return _target; } }
 

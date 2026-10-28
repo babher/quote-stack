@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-echo ==== Quote Stack v1.1  uploading to GitHub ====
+echo ==== Quote Stack v1.2  uploading to GitHub ====
 echo.
 
 git remote get-url origin 1>nul 2>nul
@@ -50,7 +50,7 @@ if errorlevel 1 (
 
 echo.
 echo [OK] done.  https://github.com/babher/quote-stack
-echo      Expected: 12 files, and tags v1 + v1.1.
+echo      Expected: 12 files, and tags v1 + v1.1 + v1.2.
 pause
 exit /b 0
 
