@@ -28,6 +28,9 @@ namespace QuoteStack
                     i++;
                 }
             }
+            // Runs before every other mode, including the test hooks: a temp file left by an
+            // interrupted delete is never valid data and must not survive a restart.
+            Store.CleanupTemp();
             foreach (string a in args)
             {
                 // Reports the facts that decide whether SendInput can work at all:
@@ -179,7 +182,44 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
-                // Test-only hook: the bottom-bar "全选" + "删除 N 项" path, headless. It does
+                // Test-only hook: the storage round-trip. Quotes arrive with quotes, tabs,
+                // newlines and astral characters; none of that may corrupt the file or come
+                // back changed after a reload.
+                if (a == "--roundtrip" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    string[] tricky = new string[]
+                    {
+                        "plain",
+                        "has \"quotes\" and \\backslash",
+                        "line1\nline2\r\nline3",
+                        "tab\there",
+                        "emoji 😀 中文",
+                        "trailing space ",
+                        "\"text\":\"fake-field\""
+                    };
+                    string err;
+                    StringBuilder sb = new StringBuilder();
+                    foreach (string s in tricky) Store.Append(s, "msedge.exe", "t", "", out err);
+                    int lines = File.Exists(Store.FilePath) ? File.ReadAllLines(Store.FilePath).Length : 0;
+                    List<Record> back = Records.Load(int.MaxValue);
+                    sb.Append("appended=").Append(tricky.Length).Append(" file-lines=").Append(lines).Append("\n");
+                    sb.Append("loaded=").Append(back.Count).Append("\n");
+                    bool allOk = back.Count == tricky.Length;
+                    for (int k = 0; k < tricky.Length; k++)
+                    {
+                        // Load returns newest first, so case k sits at the mirrored index.
+                        string got = back.Count > k ? back[back.Count - 1 - k].Text : null;
+                        bool ok = got == tricky[k];
+                        if (!ok) allOk = false;
+                        sb.Append("case").Append(k).Append(" ok=").Append(ok)
+                          .Append(" len=").Append(got == null ? -1 : got.Length).Append("\n");
+                    }
+                    sb.Append("all-ok=").Append(allOk).Append("\n");
+                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
                 // not click pixels; it calls the very methods those two controls call.
                 if (a == "--delticktest" && Array.IndexOf(args, a) + 1 < args.Length)
                 {
@@ -314,6 +354,20 @@ namespace QuoteStack
         public static string UsedPath
         {
             get { return Path.Combine(DirPath, "used.ndjson"); }
+        }
+
+        // A crash between writing stack.ndjson.tmp and replacing the real file leaves the
+        // temp file behind. It is never valid data on its own, so it is removed at startup
+        // instead of piling up next to the real file.
+        public static void CleanupTemp()
+        {
+            lock (Gate)
+            {
+                try { if (File.Exists(FilePath + ".tmp")) File.Delete(FilePath + ".tmp"); }
+                catch { }
+                try { if (File.Exists(UsedPath + ".tmp")) File.Delete(UsedPath + ".tmp"); }
+                catch { }
+            }
         }
 
         // 12 hex chars of SHA-256 over the exact text. Used as the identity of a quote
@@ -1221,6 +1275,7 @@ namespace QuoteStack
                         _count = Math.Max(0, Store.Count());
                         _status = "已删除 " + f.Deleted + " 条已引用内容";
                         _flashKind = KindOk;
+                        _flash.Interval = 3000; // a deletion message is worth reading
                         _flash.Stop();
                         _flash.Start();
                         Invalidate();
@@ -1267,6 +1322,7 @@ namespace QuoteStack
             _drawer.ListView.SetHint("已删除 " + removed + " 条");
             _status = "已删除 " + removed + " 条";
             _flashKind = KindOk;
+            _flash.Interval = 3000; // same reading time as the cleanup panel's message
             _flash.Stop();
             _flash.Start();
             Invalidate();
