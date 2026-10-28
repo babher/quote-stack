@@ -68,32 +68,6 @@ namespace QuoteStack
                     sb.Append("reject-unknown-mod=").Append(Hotkey.Parse("Hyper+Q", out m, out k, out e) ? "accepted" : e).Append("\n");
                     sb.Append("reject-win-only=").Append(Hotkey.Parse("Win+Q", out m, out k, out e) ? "accepted" : e).Append("\n");
                     sb.Append("accept-lowercase=").Append(Hotkey.Parse("ctrl+alt+q", out m, out k, out e) ? "accepted" : e).Append("\n");
-                    // Save-time conflict detection: take a combination that is free right now, then
-                    // prove the probe sees it as taken while held and free again after release.
-                    string[] cand = new string[] { "Ctrl+Alt+Q", "Ctrl+Shift+Q", "Ctrl+Alt+1", "Ctrl+Shift+F9" };
-                    string picked = null;
-                    uint pm = 0, pv = 0;
-                    int pe = 0;
-                    foreach (string c in cand)
-                    {
-                        uint m0, v0;
-                        string e0;
-                        if (!Hotkey.Parse(c, out m0, out v0, out e0)) continue;
-                        if (HotkeyCheck.IsAvailable(m0, v0, out pe)) { picked = c; pm = m0; pv = v0; break; }
-                    }
-                    sb.Append("probe-picked=").Append(picked == null ? "none" : picked).Append("\n");
-                    if (picked != null)
-                    {
-                        HotkeyProbe holder = new HotkeyProbe();
-                        bool tookIt = holder.TryTake(pm, pv, out pe);
-                        bool freeWhileHeld = HotkeyCheck.IsAvailable(pm, pv, out pe);
-                        int heldErr = pe;
-                        holder.Release();
-                        bool freeAfter = HotkeyCheck.IsAvailable(pm, pv, out pe);
-                        sb.Append("probe-hold-ok=").Append(tookIt ? "yes" : "no").Append("\n");
-                        sb.Append("probe-seen-as-taken=").Append(freeWhileHeld ? "no" : "yes").Append(" err=").Append(heldErr).Append("\n");
-                        sb.Append("probe-free-after-release=").Append(freeAfter ? "yes" : "no").Append("\n");
-                    }
                     File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
                     Environment.Exit(0);
                     return;
@@ -3709,61 +3683,12 @@ namespace QuoteStack
             if (Toggled != null) Toggled(this, EventArgs.Empty);
         }
     }
-    // Availability probe for the hotkey editor: Windows gives a combination to whoever registers
-    // first and answers 1409 (ERROR_HOTKEY_ALREADY_REGISTERED) to everyone else, so the only honest
-    // way to report "被占用" on save is to try to take it on a throwaway window and let it go.
-    class HotkeyProbe : NativeWindow
-    {
-        public const int ErrorAlreadyRegistered = 1409;
-
-        public HotkeyProbe()
-        {
-            CreateParams cp = new CreateParams();
-            cp.Caption = "QuoteStack hotkey probe";
-            CreateHandle(cp);
-        }
-
-        public bool TryTake(uint mods, uint vk, out int error)
-        {
-            error = 0;
-            if (RegisterHotKey(Handle, 0x4A1C, mods, vk)) return true;
-            error = Marshal.GetLastWin32Error();
-            return false;
-        }
-
-        // Destroying the window releases whatever this probe registered.
-        public void Release()
-        {
-            if (Handle != IntPtr.Zero) DestroyHandle();
-        }
-
-        [DllImport("user32.dll", SetLastError = true)]
-        static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
-    }
-
-    static class HotkeyCheck
-    {
-        public static bool IsAvailable(uint mods, uint vk, out int error)
-        {
-            HotkeyProbe probe = new HotkeyProbe();
-            try
-            {
-                return probe.TryTake(mods, vk, out error);
-            }
-            finally
-            {
-                probe.Release();
-            }
-        }
-    }
-
     class SettingsForm : Form
     {
         readonly HotkeyBox _box = new HotkeyBox();
         readonly Label _msg = new Label();
         readonly AccordionRow _row = new AccordionRow();
         bool _bodyOpen;
-        readonly string _current;
         readonly Panel _body = new Panel();
         Button _save;
         Button _both;
@@ -3781,7 +3706,6 @@ namespace QuoteStack
             MinimizeBox = false;
             ShowInTaskbar = false;
             TopMost = true;
-            _current = current == null ? "" : current;
             BackColor = Color.FromArgb(28, 28, 32);
             ForeColor = Color.FromArgb(228, 231, 238);
             Font = new Font("Microsoft YaHei UI", 9.5f);
@@ -3808,7 +3732,7 @@ namespace QuoteStack
             _body.Controls.Add(_box);
 
             Label hint = new Label();
-            hint.Text = "点这里，然后直接按组合键（修饰键 + 主键；Esc 取消、Delete 清空）；保存时会检查是否被占用";
+            hint.Text = "点这里，然后直接按组合键（修饰键 + 主键；Esc 取消、Delete 清空）";
             hint.AutoSize = false;
             hint.Size = new Size(340, 18);
             hint.Location = new Point(0, 34);
@@ -3917,23 +3841,6 @@ namespace QuoteStack
                 _msg.Text = error;
                 return;
             }
-
-            // The combination this instance already holds is "available" to us but a probe would see
-            // it as taken, so an unchanged value is a no-op instead of a false conflict.
-            if (string.Equals(text, _current, StringComparison.OrdinalIgnoreCase))
-            {
-                _msg.Text = "这就是当前热键，没有变化";
-                if (restart) Close();
-                return;
-            }
-
-            int probeError;
-            if (!HotkeyCheck.IsAvailable(mods, vk, out probeError))
-            {
-                _msg.Text = "该组合已被其它程序占用（err=" + probeError + "），换一个，或先去占用它的软件里改掉";
-                return;
-            }
-
             try
             {
                 Config.SaveHotkey(text);
