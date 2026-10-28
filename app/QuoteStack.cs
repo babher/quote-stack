@@ -325,6 +325,27 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
+                // Test-only hook for the bottom-bar geometry: measures the three entries at the
+                // drawer's current minimum width, at the old 380px width, and at a wide one.
+                if (a == "--barprobe" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    string errB;
+                    StringBuilder sbB = new StringBuilder();
+                    for (int k = 0; k < 3; k++)
+                        Store.Append("BAR-" + (char)('A' + k), "msedge.exe", "t", "", out errB);
+                    using (QuoteListView lv = new QuoteListView())
+                    {
+                        lv.Reload();
+                        lv.ToggleSelectAll();
+                        sbB.Append(lv.BarProbe(460)).Append("\n");
+                        sbB.Append(lv.BarProbe(380)).Append("\n");
+                        sbB.Append(lv.BarProbe(560)).Append("\n");
+                    }
+                    File.WriteAllText(outPath, sbB.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
                 // Test-only hook for the live refresh: ticks two rows out of order, expands one,
                 // appends a third record while the list exists, then runs ReloadPreserving and
                 // prints what survived the rebuild.
@@ -1432,9 +1453,11 @@ namespace QuoteStack
             _drawer.CleanupRequested += delegate { OpenCleanup(); };
             _drawer.DeleteRequested += delegate { DeleteTicked(); };
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
-            int w = 380;
+            // Wide enough that the three bottom-bar controls ("清理已引用", "删除 N 项",
+            // "全选") never run into the hint text; see Drawer.MinW.
+            int w = Math.Min(460, wa.Width - 48);
             int h = Math.Min(520, wa.Height - 96);
-            if (h < 320) h = 320;
+            if (h < 360) h = Math.Min(360, wa.Height - 48);
             _drawer.Size = new Size(w, h);
             _drawer.Location = new Point(wa.Right - 16 - w, wa.Top + (wa.Height - h) / 2);
             _drawer.Show();
@@ -2105,6 +2128,41 @@ namespace QuoteStack
             return k < 0 ? 0 : k + 1;
         }
 
+        // Test hook: measures the three bottom-bar entries with the same font and paddings
+        // OnPaint uses, so "they never overlap the hint" is a number instead of a claim.
+        public string BarProbe(int width)
+        {
+            using (var bmp = new Bitmap(1, 1))
+            using (var g = Graphics.FromImage(bmp))
+            {
+                int n = _items.Count;
+                int cnt = 0;
+                for (int i = 0; i < n; i++) if (_checked[i]) cnt++;
+                int used = 0;
+                for (int i = 0; i < n; i++) if (_items[i].Used) used++;
+                float bx = width - PadRight;
+                float allW = g.MeasureString((n > 0 && cnt == n) ? "取消全选" : "全选", _fBar).Width;
+                bx -= allW; bx -= 12f;
+                float delW = g.MeasureString("删除 " + cnt + " 项", _fBar).Width;
+                bx -= delW; bx -= 12f;
+                float clrW = g.MeasureString("清理已引用(" + used + ")", _fBar).Width;
+                bx -= clrW;
+                float room = bx - 14f - PadLeft;
+                // Worst case the record cap allows: 500 ticked rows and 500 used rows, i.e. the
+                // widest the three entries can ever get.
+                float worstDel = g.MeasureString("删除 500 项", _fBar).Width;
+                float worstClr = g.MeasureString("清理已引用(500)", _fBar).Width;
+                float worstRoom = width - PadRight - allW - 12f - worstDel - 12f - worstClr - 14f - PadLeft;
+                float hintW = g.MeasureString("已勾选 500/500 · 按热键插入", _fBar).Width;
+                return "width=" + width + " all=" + allW.ToString("0.0") + " del=" + delW.ToString("0.0")
+                    + " clr=" + clrW.ToString("0.0") + " groupLeft=" + bx.ToString("0.0")
+                    + " hintRoom=" + room.ToString("0.0") + (room >= 16f ? " ok" : " TIGHT")
+                    + " worstRoom=" + worstRoom.ToString("0.0") + (worstRoom >= 16f ? " ok" : " TIGHT")
+                    + " hintW=" + hintW.ToString("0.0")
+                    + (worstRoom >= hintW ? " hint-full" : " hint-cut");
+            }
+        }
+
         public Record Selected()
         {
             if (_sel < 0 || _sel >= _items.Count) return null;
@@ -2376,52 +2434,57 @@ namespace QuoteStack
                 g.FillRectangle(b, 0, barY, Width, BottomBarH);
             int cnt = 0;
             for (int i = 0; i < n; i++) if (_checked[i]) cnt++;
+            int usedCount = 0;
+            for (int i = 0; i < n; i++) if (_items[i].Used) usedCount++;
+
+            _clearRect = RectangleF.Empty;
+            _delRect = RectangleF.Empty;
+            _allRect = RectangleF.Empty;
+
+            // The three controls are laid out right to left and painted unconditionally, so
+            // ticking a row never reflows the bar: only the enabled state changes. Order on
+            // screen (left to right): 清理已引用(N) | 删除 N 项 | 全选.
+            float bx = Width - PadRight;
+
+            string all = (n > 0 && cnt == n) ? "取消全选" : "全选";
+            SizeF asz = g.MeasureString(all, _fBar);
+            bx -= asz.Width;
+            using (var b = new SolidBrush(n > 0 ? Color.FromArgb(150, 200, 255) : Color.FromArgb(96, 100, 112)))
+                g.DrawString(all, _fBar, b, bx, barY + 9f);
+            if (n > 0) _allRect = new RectangleF(bx - 6f, barY + 3f, asz.Width + 12f, BottomBarH - 5f);
+            bx -= 12f;
+
+            string del = "删除 " + cnt + " 项";
+            SizeF dsz = g.MeasureString(del, _fBar);
+            bx -= dsz.Width;
+            using (var b = new SolidBrush(cnt > 0 ? Color.FromArgb(255, 120, 120) : Color.FromArgb(96, 100, 112)))
+                g.DrawString(del, _fBar, b, bx, barY + 9f);
+            if (cnt > 0) _delRect = new RectangleF(bx - 6f, barY + 3f, dsz.Width + 12f, BottomBarH - 5f);
+            bx -= 12f;
+
+            string clr = "清理已引用(" + usedCount + ")";
+            SizeF csz = g.MeasureString(clr, _fBar);
+            bx -= csz.Width;
+            using (var b = new SolidBrush(usedCount > 0 ? Color.FromArgb(120, 176, 255) : Color.FromArgb(96, 100, 112)))
+                g.DrawString(clr, _fBar, b, bx, barY + 9f);
+            if (usedCount > 0) _clearRect = new RectangleF(bx - 6f, barY + 3f, csz.Width + 12f, BottomBarH - 5f);
+
+            // Whatever room is left goes to the hint, and a narrow window shortens the words
+            // instead of letting them run under the controls.
             string bar = _hint != null
                 ? _hint
                 : (cnt > 0
                     ? ("已勾选 " + cnt + "/" + n + " · 按热键插入")
                     : "未勾选 · 勾选后按热键插入");
             Color barColor = _hint != null ? Color.FromArgb(240, 170, 110) : Color.FromArgb(140, 146, 160);
-            using (var b = new SolidBrush(barColor))
-                g.DrawString(bar, _fBar, b, PadLeft, barY + 9f);
-
-            // Right side of the bar, right to left: the cleanup panel entry (only while
-            // nothing is ticked, to keep the bar readable), "全选/取消全选", and
-            // "删除 N 项" while something is ticked.
-            int usedCount = 0;
-            for (int i = 0; i < n; i++) if (_items[i].Used) usedCount++;
-            _clearRect = RectangleF.Empty;
-            _delRect = RectangleF.Empty;
-            _allRect = RectangleF.Empty;
-
-            float bx = Width - PadRight;
-            if (usedCount > 0 && cnt == 0)
+            float room = bx - 14f - PadLeft;
+            if (room > 16f)
             {
-                string clr = "清理已引用(" + usedCount + ")";
-                SizeF csz = g.MeasureString(clr, _fBar);
-                bx -= csz.Width;
-                using (var b = new SolidBrush(Color.FromArgb(120, 176, 255)))
-                    g.DrawString(clr, _fBar, b, bx, barY + 9f);
-                _clearRect = new RectangleF(bx - 6f, barY + 3f, csz.Width + 12f, BottomBarH - 5f);
-                bx -= 14f;
-            }
-
-            string all = (n > 0 && cnt == n) ? "取消全选" : "全选";
-            SizeF asz = g.MeasureString(all, _fBar);
-            bx -= asz.Width;
-            using (var b = new SolidBrush(Color.FromArgb(150, 200, 255)))
-                g.DrawString(all, _fBar, b, bx, barY + 9f);
-            _allRect = new RectangleF(bx - 6f, barY + 3f, asz.Width + 12f, BottomBarH - 5f);
-            bx -= 14f;
-
-            if (cnt > 0)
-            {
-                string del = "删除 " + cnt + " 项";
-                SizeF dsz = g.MeasureString(del, _fBar);
-                bx -= dsz.Width;
-                using (var b = new SolidBrush(Color.FromArgb(255, 120, 120)))
-                    g.DrawString(del, _fBar, b, bx, barY + 9f);
-                _delRect = new RectangleF(bx - 6f, barY + 3f, dsz.Width + 12f, BottomBarH - 5f);
+                int usedChars;
+                bool cutChars;
+                string shown = FitPrefix(g, _fBar, bar, room, out usedChars, out cutChars);
+                using (var b = new SolidBrush(barColor))
+                    g.DrawString(shown, _fBar, b, PadLeft, barY + 9f);
             }
         }
 
@@ -2739,8 +2802,12 @@ namespace QuoteStack
         const int HTBOTTOM = 15;
         const int HTBOTTOMLEFT = 16;
         const int HTBOTTOMRIGHT = 17;
-        const int MinW = 380;
-        const int MinH = 320;
+        const int MinW = 460;
+        const int MinH = 360;
+        // Height of the grab strip along the top. It exists so the panel can be moved with the
+        // mouse: the form has no title bar, so the strip is hit-tested as HTCAPTION.
+        const int HeaderH = 30;
+        const int HTCAPTION = 2;
 
         readonly QuoteListView _list = new QuoteListView();
         readonly IntPtr _target;
@@ -2753,9 +2820,11 @@ namespace QuoteStack
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
             BackColor = Color.FromArgb(52, 54, 62);
-            Padding = new Padding(1);
+            Padding = new Padding(1, 1 + HeaderH, 1, 1);
             KeyPreview = true;
             Text = "QuoteStack";
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.UserPaint, true);
             _list.Dock = DockStyle.Fill;
             Controls.Add(_list);
             _list.CloseRequested += delegate { Close(); };
@@ -2794,6 +2863,22 @@ namespace QuoteStack
             _list.Focus();
         }
 
+        // The strip is the only chrome the panel has: it names the panel and is the area the
+        // user drags. Painted here so the header scrolls with the form, never with the list.
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            Graphics g = e.Graphics;
+            using (var b = new SolidBrush(Color.FromArgb(40, 42, 48)))
+                g.FillRectangle(b, 1, 1, ClientSize.Width - 2, HeaderH);
+            using (var b = new SolidBrush(Color.FromArgb(196, 202, 214)))
+            using (var f = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold))
+                g.DrawString("引用", f, b, 12f, 7f);
+            using (var b = new SolidBrush(Color.FromArgb(120, 126, 140)))
+            using (var f = new Font("Microsoft YaHei UI", 8.5f))
+                g.DrawString("拖动这里移动 · 边缘可缩放 · Esc 关闭", f, b, 52f, 9f);
+        }
+
         protected override void OnKeyDown(KeyEventArgs e)
         {
             base.OnKeyDown(e);
@@ -2827,6 +2912,8 @@ namespace QuoteStack
                     else if (right) m.Result = (IntPtr)HTRIGHT;
                     else if (top) m.Result = (IntPtr)HTTOP;
                     else if (bottom) m.Result = (IntPtr)HTBOTTOM;
+                    // No edge: the top strip works as the title bar so the panel can be moved.
+                    else if (p.Y < HeaderH) m.Result = (IntPtr)HTCAPTION;
                 }
                 return;
             }
