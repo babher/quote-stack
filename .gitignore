@@ -1,0 +1,17 @@
+# build output and local test fixtures
+dist/
+app/dist/
+*.exe
+*.pdb
+*.log
+build.log
+diag-out.txt
+
+# one-off probes: private page logs, unknown binaries (never committed)
+p0-probe/
+p1-keyprobe/
+spike/
+
+# editor / OS noise
+Thumbs.db
+desktop.ini
