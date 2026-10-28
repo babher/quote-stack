@@ -15,3 +15,9 @@ spike/
 # editor / OS noise
 Thumbs.db
 desktop.ini
+# 本地维护文件（不进版本库，但保留在磁盘上）
+PUSH-V1.cmd
+01-*.md
+03-*.md
+app/SETKEY.cmd
+app/DIAG.cmd
