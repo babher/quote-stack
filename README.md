@@ -89,8 +89,8 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 
 | 文件 | 内容 |
 |---|---|
-| `%APPDATA%\quote-stack\stack.ndjson` | 引用记录，一行一条 JSON（`ts`/`source`/`title`/`text`/`url`） |
-| `%APPDATA%\quote-stack\used.ndjson` | 已插入过哪些引用（`ts`/`sha12`），供「清理已引用」使用；记录被删除时同步清理 |
+| `%APPDATA%\quote-stack\stack.ndjson` | 引用记录，一行一条 JSON（`id`/`ts`/`source`/`title`/`text`/`url`）；最多保留 500 条，超出后自动删除最旧的 |
+| `%APPDATA%\quote-stack\used.ndjson` | 已插入过哪些引用（`ts`/`key`，`key` 即记录 `id`；v1 旧记录回退为文本哈希），供「清理已引用」使用；记录被删除时同步清理 |
 | `%APPDATA%\quote-stack\config.json` | 热键配置 |
 | `%APPDATA%\quote-stack\startup.log` | 启动与采集诊断，**只记计数与错误码，不记正文** |
 | `%LOCALAPPDATA%\qsapp\QuoteStack.exe` | 安装后的程序本体 |
@@ -105,6 +105,7 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 - 网址读取依赖采集时按一次 `Ctrl+L` 读地址栏，个别页面偶尔读不到，此时该条只存来源不存网址
 - 插入是否真的落进目标程序**无法自检**：个别程序（部分终端）可能不认模拟粘贴，此时内容已放进剪贴板，手按 `Ctrl+V` 即可
 - 记录不去重、不做敏感内容过滤（密码、证件号选中后同样会被保存）
+- 上限 500 条：最旧的先被删除（删除会连带清掉它的「已引用」标记）；每条采集有自己的 `id`，同一句话采两次是两条独立记录，删一条不会带走另一条
 
 ## 目录结构
 

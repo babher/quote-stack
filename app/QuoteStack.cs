@@ -128,17 +128,27 @@ namespace QuoteStack
                     Store.Append("CCC 第三条", "msedge.exe", "t", "", out err);
                     sb.Append("after-append=").Append(Store.Count()).Append("\n");
 
-                    Store.AppendUsed(Store.Hash12("AAA 第一条"));
-                    Store.AppendUsed(Store.Hash12("CCC 第三条"));
+                    // Identity is the record id, not the text, so the test reads the ids back
+                    // instead of recomputing hashes the way v1 did.
+                    List<Record> all = Records.Load(int.MaxValue);
+                    Record rA = null;
+                    Record rC = null;
+                    foreach (Record r in all)
+                    {
+                        if (r.Text == "AAA 第一条") rA = r;
+                        if (r.Text == "CCC 第三条") rC = r;
+                    }
+                    Store.AppendUsed(rA.Key);
+                    Store.AppendUsed(rC.Key);
                     List<Record> usedList = Records.LoadUsedOnly();
                     sb.Append("used=");
                     foreach (Record r in usedList) sb.Append(r.Text).Append(",");
                     sb.Append("\n");
 
                     HashSet<string> drop = new HashSet<string>(StringComparer.Ordinal);
-                    drop.Add(Store.Hash12("AAA 第一条"));
+                    drop.Add(rA.Key);
                     int removed;
-                    bool ok = Store.DeleteByHash(drop, out removed, out err);
+                    bool ok = Store.DeleteByKey(drop, out removed, out err);
                     sb.Append("delete-ok=").Append(ok).Append(" removed=").Append(removed)
                       .Append(" error=").Append(err == null ? "-" : err).Append("\n");
                     sb.Append("after-delete=").Append(Store.Count()).Append("\n");
@@ -148,6 +158,68 @@ namespace QuoteStack
                     sb.Append("tmp-left=").Append(File.Exists(Store.FilePath + ".tmp") ? "yes" : "no").Append("\n");
                     sb.Append("usedtmp-left=").Append(File.Exists(Store.UsedPath + ".tmp") ? "yes" : "no").Append("\n");
                     File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
+                // Test-only hook for the D1 regression: two captures of the same sentence are
+                // two records with two ids, so deleting one must leave the other alive and
+                // un-marked. Prints identities only, never the sentence body.
+                if (a == "--idt" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    string err2;
+                    StringBuilder sb2 = new StringBuilder();
+                    Store.Append("DUP 同文一条", "msedge.exe", "t", "", out err2);
+                    Store.Append("DUP 同文一条", "msedge.exe", "t", "", out err2);
+                    List<Record> two = Records.Load(int.MaxValue);
+                    sb2.Append("appended=").Append(two.Count).Append("\n");
+                    string k0 = two.Count > 0 ? two[0].Key : "-";
+                    string k1 = two.Count > 1 ? two[1].Key : "-";
+                    sb2.Append("keys-differ=").Append(k0 != k1).Append(" ids=").Append(k0.Length)
+                       .Append("/").Append(k1.Length).Append("\n");
+                    Store.AppendUsed(k0);
+                    HashSet<string> dropOne = new HashSet<string>(StringComparer.Ordinal);
+                    dropOne.Add(k0);
+                    int removedOne;
+                    bool okOne = Store.DeleteByKey(dropOne, out removedOne, out err2);
+                    List<Record> left = Records.Load(int.MaxValue);
+                    sb2.Append("delete-ok=").Append(okOne).Append(" removed=").Append(removedOne)
+                       .Append(" remaining=").Append(left.Count).Append("\n");
+                    sb2.Append("remaining-is-duplicate=").Append(left.Count == 1 ? (left[0].Text == "DUP 同文一条") : false).Append("\n");
+                    sb2.Append("remaining-used=").Append(left.Count == 1 ? left[0].Used : true).Append("\n");
+                    int usedLines = 0;
+                    if (File.Exists(Store.UsedPath))
+                        foreach (string l in File.ReadAllLines(Store.UsedPath, new UTF8Encoding(false)))
+                            if (l.Trim().Length > 0) usedLines++;
+                    sb2.Append("used-lines=").Append(usedLines).Append("\n");
+                    // v1 rows carry no id: identity falls back to the text hash, and the journal
+                    // written by v1 keyed on that hash has to keep working after the upgrade.
+                    string legacyText = "LEGACY 老记录";
+                    string legacyLine = "{\"ts\":\"" + DateTime.Now.AddDays(-30).ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz")
+                        + "\",\"source\":\"msedge.exe\",\"title\":\"t\",\"url\":\"\",\"text\":\"" + legacyText + "\"}";
+                    File.AppendAllText(Store.FilePath, legacyLine + "\n", new UTF8Encoding(false));
+                    File.AppendAllText(Store.UsedPath,
+                        "{\"ts\":\"2026-10-01T10:00:00.000+08:00\",\"sha12\":\"" + Store.Hash12(legacyText) + "\"}\n",
+                        new UTF8Encoding(false));
+                    Record lg = null;
+                    foreach (Record r in Records.Load(int.MaxValue)) if (r.Text == legacyText) lg = r;
+                    sb2.Append("legacy-found=").Append(lg != null).Append("\n");
+                    sb2.Append("legacy-used=").Append(lg != null && lg.Used).Append("\n");
+                    HashSet<string> dropLegacy = new HashSet<string>(StringComparer.Ordinal);
+                    if (lg != null) dropLegacy.Add(lg.Key);
+                    int removedLegacy;
+                    bool okLegacy = Store.DeleteByKey(dropLegacy, out removedLegacy, out err2);
+                    bool legacyGone = true;
+                    foreach (Record r in Records.Load(int.MaxValue)) if (r.Text == legacyText) legacyGone = false;
+                    sb2.Append("legacy-delete-ok=").Append(okLegacy).Append(" removed=").Append(removedLegacy).Append("\n");
+                    sb2.Append("legacy-gone=").Append(legacyGone).Append("\n");
+                    int usedAfterLegacy = 0;
+                    if (File.Exists(Store.UsedPath))
+                        foreach (string l in File.ReadAllLines(Store.UsedPath, new UTF8Encoding(false)))
+                            if (l.Trim().Length > 0) usedAfterLegacy++;
+                    sb2.Append("legacy-used-lines=").Append(usedAfterLegacy).Append("\n");
+                    sb2.Append("tmp-left=").Append(File.Exists(Store.FilePath + ".tmp") ? "yes" : "no").Append("\n");
+                    File.WriteAllText(outPath, sb2.ToString(), new UTF8Encoding(false));
                     Environment.Exit(0);
                     return;
                 }
@@ -237,9 +309,9 @@ namespace QuoteStack
                         foreach (Record r in lv.Checked()) sb.Append(r.Text).Append(",");
                         sb.Append("\n");
                         HashSet<string> drop = new HashSet<string>(StringComparer.Ordinal);
-                        foreach (Record r in lv.Checked()) drop.Add(Store.Hash12(r.Text));
+                        foreach (Record r in lv.Checked()) drop.Add(r.Key);
                         int removed;
-                        bool ok = Store.DeleteByHash(drop, out removed, out err);
+                        bool ok = Store.DeleteByKey(drop, out removed, out err);
                         sb.Append("delete-ok=").Append(ok).Append(" removed=").Append(removed)
                           .Append(" error=").Append(err == null ? "-" : err).Append("\n");
                         sb.Append("after-delete=").Append(Store.Count()).Append("\n");
@@ -316,11 +388,18 @@ namespace QuoteStack
             catch { return null; }
         }
 
+        // The stack is a working set, not an archive: once it holds more than this many
+        // records the oldest ones fall off the front.
+        public const int MaxRecords = 500;
+
         public static bool Append(string text, string source, string title, string url, out string error)
         {
             error = null;
             var sb = new StringBuilder(256 + text.Length);
-            sb.Append("{\"ts\":\"").Append(DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz")).Append("\",");
+            // Written per record so two captures of the same sentence stay two different
+            // records: deleting one no longer deletes the other (D1 in the 2026-10-28 audit).
+            sb.Append("{\"id\":\"").Append(Guid.NewGuid().ToString("N").Substring(0, 12)).Append("\",");
+            sb.Append("\"ts\":\"").Append(DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz")).Append("\",");
             sb.Append("\"source\":\"").Append(Escape(source)).Append("\",");
             sb.Append("\"title\":\"").Append(Escape(title)).Append("\",");
             sb.Append("\"url\":\"").Append(Escape(url == null ? "" : url)).Append("\",");
@@ -338,6 +417,7 @@ namespace QuoteStack
                         fs.Write(bytes, 0, bytes.Length);
                         fs.Flush();
                     }
+                    TrimTo(MaxRecords);
                     return true;
                 }
                 catch (Exception ex)
@@ -384,16 +464,16 @@ namespace QuoteStack
             }
         }
 
-        public static bool AppendUsed(string hash)
+        public static bool AppendUsed(string key)
         {
-            if (hash == null || hash.Length != 12) return false;
+            if (key == null || key.Length == 0) return false;
             lock (Gate)
             {
                 try
                 {
                     Directory.CreateDirectory(DirPath);
                     string line = "{\"ts\":\"" + DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz")
-                        + "\",\"sha12\":\"" + hash + "\"}\n";
+                        + "\",\"key\":\"" + key + "\"}\n";
                     byte[] bytes = Utf8.GetBytes(line);
                     using (var fs = new FileStream(UsedPath, FileMode.Append, FileAccess.Write, FileShare.Read))
                     {
@@ -433,8 +513,11 @@ namespace QuoteStack
                     string line;
                     while ((line = sr.ReadLine()) != null)
                     {
-                        string h = JsonField(line, "sha12");
-                        if (h != null && h.Length == 12) set.Add(h);
+                        // New journals store the record id under "key"; v1 wrote a text hash
+                        // under "sha12". Both are read so an old journal keeps working.
+                        string h = JsonField(line, "key");
+                        if (h == null) h = JsonField(line, "sha12");
+                        if (h != null && h.Length > 0) set.Add(h);
                     }
                 }
             }
@@ -442,10 +525,12 @@ namespace QuoteStack
             return set;
         }
 
-        // Removes every record whose text hash is in drop. The rewrite goes to a temp
-        // file in the same directory and then File.Replace, so an interrupted delete
-        // cannot leave a half-written stack (red line 9: no non-atomic writes).
-        public static bool DeleteByHash(HashSet<string> drop, out int removed, out string error)
+        // Removes every record whose identity is in drop. Identity is the per-record id
+        // written at capture time; v1 rows have no id and fall back to "h:" + text hash,
+        // which is what the old code deleted by. The rewrite goes to a temp file in the
+        // same directory and then MoveFileExW replaces it, so an interrupted delete cannot
+        // leave a half-written stack (red line 9: no non-atomic writes).
+        public static bool DeleteByKey(HashSet<string> drop, out int removed, out string error)
         {
             removed = 0;
             error = null;
@@ -467,7 +552,9 @@ namespace QuoteStack
                             if (line.Trim().Length == 0) continue;
                             string text = JsonField(line, "text");
                             if (text == null) continue;
-                            if (drop.Contains(Hash12(text))) { removed++; continue; }
+                            string id = JsonField(line, "id");
+                            string key = (id != null && id.Length > 0) ? id : ("h:" + Hash12(text));
+                            if (drop.Contains(key)) { removed++; continue; }
                             keep.Add(line);
                         }
                     }
@@ -497,7 +584,68 @@ namespace QuoteStack
             }
         }
 
-        static void PruneUsed(HashSet<string> drop)        {
+        // Keeps the newest max records and drops the oldest ones. Called after every append,
+        // so the stack can never grow past MaxRecords. The rewrite is the same atomic
+        // replace as deletion; if it cannot be done the extra records stay until the next
+        // capture rather than being lost.
+        public static int TrimTo(int max)
+        {
+            int dropped = 0;
+            if (max <= 0) return 0;
+            lock (Gate)
+            {
+                string tmp = null;
+                try
+                {
+                    if (!File.Exists(FilePath)) return 0;
+                    List<string> lines = new List<string>();
+                    using (var fs = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (var sr = new StreamReader(fs, Utf8))
+                    {
+                        string line;
+                        while ((line = sr.ReadLine()) != null)
+                            if (line.Trim().Length > 0) lines.Add(line);
+                    }
+                    int cut = lines.Count - max;
+                    if (cut <= 0) return 0;
+                    HashSet<string> gone = new HashSet<string>(StringComparer.Ordinal);
+                    for (int i = 0; i < cut; i++)
+                    {
+                        string text = JsonField(lines[i], "text");
+                        if (text == null) continue;
+                        string id = JsonField(lines[i], "id");
+                        gone.Add((id != null && id.Length > 0) ? id : ("h:" + Hash12(text)));
+                    }
+                    List<string> keep = lines.GetRange(cut, lines.Count - cut);
+                    tmp = FilePath + ".tmp";
+                    using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                    {
+                        foreach (string l in keep)
+                        {
+                            byte[] b = Utf8.GetBytes(l + "\n");
+                            fs.Write(b, 0, b.Length);
+                        }
+                        fs.Flush(true);
+                    }
+                    if (!ReplaceFileAtomic(tmp, FilePath))
+                        throw new IOException("atomic-replace-failed err=" + Marshal.GetLastWin32Error());
+                    tmp = null;
+                    PruneUsed(gone);
+                    dropped = cut;
+                    LogStartup("trim: dropped=" + cut + " kept=" + max); // counts only
+                }
+                catch (Exception ex)
+                {
+                    if (tmp != null) { try { File.Delete(tmp); } catch { } }
+                    dropped = 0;
+                    LogStartup("trim: failed " + ex.GetType().Name); // no text in the log
+                }
+                return dropped;
+            }
+        }
+
+        static void PruneUsed(HashSet<string> drop)
+        {
             string tmp = null;
             try
             {
@@ -510,8 +658,9 @@ namespace QuoteStack
                     while ((line = sr.ReadLine()) != null)
                     {
                         if (line.Trim().Length == 0) continue;
-                        string h = JsonField(line, "sha12");
-                        if (h != null && drop.Contains(h)) continue;
+                        string h = JsonField(line, "key");
+                        if (h == null) h = JsonField(line, "sha12");
+                        if (h != null && (drop.Contains(h) || drop.Contains("h:" + h))) continue;
                         keep.Add(line);
                     }
                 }
@@ -1258,7 +1407,7 @@ namespace QuoteStack
         }
 
         // Batch delete of the quotes that were already inserted at least once. The
-        // rewrite itself is atomic (Store.DeleteByHash); the user confirms the count
+        // rewrite itself is atomic (Store.DeleteByKey); the user confirms the count
         // first because there is no undo.
         void OpenCleanup()
         {
@@ -1309,10 +1458,10 @@ namespace QuoteStack
             if (ask != DialogResult.Yes) return;
 
             HashSet<string> drop = new HashSet<string>(StringComparer.Ordinal);
-            foreach (Record r in picked) drop.Add(Store.Hash12(r.Text));
+            foreach (Record r in picked) drop.Add(r.Key);
             int removed;
             string error;
-            if (!Store.DeleteByHash(drop, out removed, out error))
+            if (!Store.DeleteByKey(drop, out removed, out error))
             {
                 _drawer.ListView.SetHint("删除失败：" + error);
                 return;
@@ -1359,7 +1508,7 @@ namespace QuoteStack
                 int marked = 0;
                 foreach (Record r in chosen)
                 {
-                    if (Store.AppendUsed(Store.Hash12(r.Text))) marked++;
+                    if (Store.AppendUsed(r.Key)) marked++;
                     r.Used = true;
                 }
                 Store.LogStartup("deliver: marked-used=" + marked + "/" + chosen.Count);
@@ -1511,9 +1660,21 @@ namespace QuoteStack
         public string Source;
         public string Url;
         public DateTimeOffset When;
+        // Per-record identity written at capture time. v1 rows have none; for those the
+        // identity falls back to "h:" + the text hash, which is how v1 deleted them.
+        public string Id;
         // True once this quote has been inserted at least once; drives the marker in
         // the list and the cleanup panel.
         public bool Used;
+
+        public string Key
+        {
+            get
+            {
+                if (Id != null && Id.Length > 0) return Id;
+                return "h:" + Store.Hash12(Text == null ? "" : Text);
+            }
+        }
     }
 
     static class Records
@@ -1543,15 +1704,23 @@ namespace QuoteStack
                     string text = Store.JsonField(lines[i], "text");
                     if (text == null || text.Trim().Length == 0) continue;
                     Record r = new Record();
+                    r.Id = Store.JsonField(lines[i], "id");
                     r.Text = text;
                     r.Source = AppLabel(Store.JsonField(lines[i], "source"));
                     r.Url = Store.JsonField(lines[i], "url");
                     r.When = ParseWhen(Store.JsonField(lines[i], "ts"));
-                    r.Used = used.Contains(Store.Hash12(text));
+                    // New journals key on the record id, v1 journals keyed on the text hash;
+                    // both are honoured so an upgrade never loses the 已引用 markers.
+                    r.Used = used.Contains(r.Key) || used.Contains(Store.Hash12(text));
                     list.Add(r);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // A damaged line must not look like an empty stack. Only the exception type
+                // is logged: never the text that failed to parse.
+                Store.LogStartup("load: " + ex.GetType().Name + " (part of the list may be missing)");
+            }
             return list;
         }
 
@@ -1773,7 +1942,7 @@ namespace QuoteStack
 
         public void Reload()
         {
-            _items = Records.Load(200);
+            _items = Records.Load(int.MaxValue);
             _open = new bool[_items.Count];
             _checked = new bool[_items.Count]; // nothing is checked until the user says so
             _picks.Clear();
@@ -2439,7 +2608,7 @@ namespace QuoteStack
             {
                 if (!cb.Checked) continue;
                 Record r = (Record)cb.Tag;
-                drop.Add(Store.Hash12(r.Text));
+                drop.Add(r.Key);
                 n++;
             }
             if (n == 0)
@@ -2454,7 +2623,7 @@ namespace QuoteStack
 
             int removed;
             string err;
-            if (!Store.DeleteByHash(drop, out removed, out err))
+            if (!Store.DeleteByKey(drop, out removed, out err))
             {
                 _tip.Text = "删除失败：" + err;
                 return;
