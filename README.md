@@ -15,19 +15,6 @@
 
 当前为 `v1`（首个可用版本）。
 
-## 上传到 GitHub
-
-这一步必须由你本机执行——开发环境里对 github.com 的 TLS 握手被拦截，
-所以本仓库只做到"本地提交 + 打 `v1` 标签"，推送脚本留给你跑：
-
-1. 打开 https://github.com/new
-   - 仓库名填 `quote-stack`
-   - **不要**勾选 "Add a README file"（否则推送会被拒）
-   - 公开/私有自己选：公开则这三份设计文档和代码会一起公开（里面没有你的私人数据，探针目录已排除）
-2. 双击本目录下的 `PUSH-V1.cmd`
-3. 若弹出 GitHub 登录窗口，登录并授权（凭据由系统 Git 凭据管理器保存，不经过任何第三方）
-4. 成功后打开 https://github.com/babher/quote-stack 应能看到 10 个文件与 `v1` 标签
-
 ## 构建
 
 需要系统自带的 .NET Framework 4 编译器（Windows 自带，无需安装 SDK）：
