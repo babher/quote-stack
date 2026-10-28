@@ -82,8 +82,10 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 { "hotkey": "Alt+Shift+Q", "drawerW": "320", "drawerH": "360" }
 ```
 
-**改热键不用再手改文件**：打开抽屉后左侧会浮出一个小圆形齿轮按钮，点它弹出设置面板。热键是**按出来的**、不是打出来的——点一下输入框，直接按 `Ctrl+Alt+Q` 这样的组合，框里会显示录到的键：
+**改热键不用再手改文件**：打开抽屉后左侧会浮出一个小圆形齿轮按钮，点它弹出设置面板。面板是**栏式（折叠）**的：现在只有「热键修改」一栏，右侧是展开箭头，点这一栏才展开录制区，其余位置先留空、以后再加别的设置：
 
+- 展开后点一下输入框，直接按 `Ctrl+Alt+Q` 这样的组合（**按出来的、不是打出来的**），框里显示录到的键，栏名右侧同步显示当前值
+- `取消` / `Esc` 关闭面板；`Esc` 在录制中只撤销这一轮录制
 - `保存` —— 写入 `config.json`，下次启动生效（小条提示「热键已保存 · 重启后生效」）
 - `保存并重启` —— 先**试注册**新组合：注册不上就当场提示并保留原热键，**不会去启动一个注定失败的实例**；注册得上才启动新实例，并等新实例在 `startup.log` 里写出 `hotkey-registered: <组合>` 才退出自己。新实例没起来会被关掉、原热键自动恢复
 - 录制规则：至少一个修饰键（`Ctrl`/`Alt`/`Shift`）+ 主键 `A-Z`、`0-9`、`F1-F24`；**再点一次输入框会重新录制**（旧值保留到新组合录成为止）；`Esc` 取消（恢复这一轮录制前的值）、`Delete`/`Backspace` 清空；缺修饰键、不认识的键、单独的 `Win` 组合都会当场提示且**不写文件**
@@ -91,7 +93,7 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 命令行/文件路径仍然可用（托盘「打开配置」或 `app/SETKEY.cmd`）：
 
 - 默认写的是 `Alt+Q`，但本机该组合常被其它软件占用（`RegisterHotKey` 返回 1409）
-- **冲突不再直接退出**：注册失败时按 `Alt+Shift+Q` → `Ctrl+Alt+Q` → `Ctrl+Shift+Q` → `Alt+D` → `Ctrl+Alt+1` 依次试，取第一个能注册的，把它写回 `config.json`，并在小条上提示「原热键被占用，已改用 X」。全都占着才弹框退出。日志分别记 `hotkey-register-failed: … err=1409`、`hotkey-fallback: 旧 -> 新`、`hotkey-fallback-written: 新`
+- **冲突不再直接退出**：注册失败时按 `Alt+Shift+Q` → `Ctrl+Alt+Q` → `Ctrl+Shift+Q` → `Ctrl+Alt+1` 依次试，取第一个能注册的，把它写回 `config.json`，并在小条上提示「原热键被占用，已改用 X」。全都占着才弹框退出。日志分别记 `hotkey-register-failed: … err=1409`、`hotkey-fallback: 旧 -> 新`、`hotkey-fallback-written: 新`
 - 支持格式：修饰键 `Alt`/`Ctrl`/`Shift`/`Win` + 主键 `A-Z`、`0-9`、`F1-F24`；必须带修饰键且不能只用 `Win`
 
 ## 数据位置

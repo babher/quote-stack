@@ -517,6 +517,30 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
+                // Test-only hook for the settings accordion: builds the dialog without showing it,
+                // records its collapsed/expanded geometry, and disposes it.
+                if (a == "--accordiontest" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    StringBuilder sbA = new StringBuilder();
+                    using (SettingsForm f = new SettingsForm("Alt+Shift+Q"))
+                    {
+                        sbA.Append("collapsed-size=").Append(f.ClientSize.Width).Append("x").Append(f.ClientSize.Height).Append("\n");
+                        sbA.Append("collapsed-body=").Append(f.BodyVisible ? "visible" : "hidden").Append("\n");
+                        sbA.Append("collapsed-arrow=").Append(f.FirstRow.Expanded ? "down" : "right").Append("\n");
+                        sbA.Append("row-title=").Append(f.FirstRow.Title).Append("\n");
+                        sbA.Append("row-value=").Append(f.FirstRow.ValueText).Append("\n");
+                        f.ToggleFirstRow();
+                        sbA.Append("expanded-size=").Append(f.ClientSize.Width).Append("x").Append(f.ClientSize.Height).Append("\n");
+                        sbA.Append("expanded-body=").Append(f.BodyVisible ? "visible" : "hidden").Append("\n");
+                        sbA.Append("expanded-arrow=").Append(f.FirstRow.Expanded ? "down" : "right").Append("\n");
+                        f.ToggleFirstRow();
+                        sbA.Append("collapsed-again=").Append(f.ClientSize.Width).Append("x").Append(f.ClientSize.Height).Append("\n");
+                    }
+                    File.WriteAllText(outPath, sbA.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
                 // Test-only hook for the remembered drawer size: writes a config that only has a
                 // hotkey, saves a size, and checks the hotkey survived the rewrite.
                 if (a == "--drawertest" && Array.IndexOf(args, a) + 1 < args.Length)
@@ -3579,10 +3603,95 @@ namespace QuoteStack
         }
     }
 
+    // One collapsible section: title on the left, current value and a chevron on the right. The panel
+    // has a single section for now; a section's body lives in its own panel, so another section can be
+    // added later without touching this drawing code.
+    class AccordionRow : Control
+    {
+        string _title = "";
+        string _valueText = "";
+        bool _expanded;
+
+        public event EventHandler Toggled;
+
+        public AccordionRow()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            Cursor = Cursors.Hand;
+            Height = 46;
+            BackColor = Color.FromArgb(40, 42, 48);
+        }
+
+        public string Title
+        {
+            get { return _title; }
+            set { _title = value == null ? "" : value; Invalidate(); }
+        }
+
+        public string ValueText
+        {
+            get { return _valueText; }
+            set { _valueText = value == null ? "" : value; Invalidate(); }
+        }
+
+        public bool Expanded
+        {
+            get { return _expanded; }
+            set { _expanded = value; Invalidate(); }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            Graphics g = e.Graphics;
+            Rectangle box = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (Pen border = new Pen(Color.FromArgb(60, 62, 72)))
+                g.DrawRectangle(border, box);
+
+            using (Font f = new Font("Microsoft YaHei UI", 10f))
+            using (SolidBrush textBrush = new SolidBrush(Color.FromArgb(230, 233, 240)))
+                g.DrawString(_title, f, textBrush, new PointF(14f, (Height - f.Height) / 2f - 1f));
+
+            if (_valueText.Length > 0)
+            {
+                using (Font small = new Font("Microsoft YaHei UI", 8.5f))
+                    TextRenderer.DrawText(g, _valueText, small,
+                        new Rectangle(140, 0, Width - 140 - 30, Height),
+                        Color.FromArgb(140, 146, 158),
+                        TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
+
+            int cx = Width - 20;
+            int cy = Height / 2;
+            using (Pen chevron = new Pen(Color.FromArgb(160, 166, 178), 1.8f))
+            {
+                if (_expanded)
+                    g.DrawLines(chevron, new Point[] { new Point(cx - 5, cy - 2), new Point(cx, cy + 3), new Point(cx + 5, cy - 2) });
+                else
+                    g.DrawLines(chevron, new Point[] { new Point(cx - 2, cy - 5), new Point(cx + 3, cy), new Point(cx - 2, cy + 5) });
+            }
+        }
+
+        // The row toggles itself; the form listens to Toggled to resize and show the body.
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button != MouseButtons.Left) return;
+            _expanded = !_expanded;
+            Invalidate();
+            if (Toggled != null) Toggled(this, EventArgs.Empty);
+        }
+    }
     class SettingsForm : Form
     {
         readonly HotkeyBox _box = new HotkeyBox();
         readonly Label _msg = new Label();
+        readonly AccordionRow _row = new AccordionRow();
+        bool _bodyOpen;
+        readonly Panel _body = new Panel();
+        Button _save;
+        Button _both;
 
         public string Saved { get; private set; }
 
@@ -3597,58 +3706,88 @@ namespace QuoteStack
             MinimizeBox = false;
             ShowInTaskbar = false;
             TopMost = true;
-            ClientSize = new Size(372, 168);
             BackColor = Color.FromArgb(28, 28, 32);
             ForeColor = Color.FromArgb(228, 231, 238);
             Font = new Font("Microsoft YaHei UI", 9.5f);
 
-            Label caption = new Label();
-            caption.Text = "热键";
-            caption.AutoSize = true;
-            caption.Location = new Point(16, 14);
-            Controls.Add(caption);
+            _row.Title = "热键修改";
+            _row.ValueText = current == null ? "" : current;
+            _row.Location = new Point(16, 14);
+            _row.Size = new Size(340, 46);
+            _row.Toggled += delegate { ApplyLayout(_row.Expanded); };
+            Controls.Add(_row);
+
+            _body.Location = new Point(16, 66);
+            _body.Size = new Size(340, 132);
+            _body.BackColor = BackColor;
+            Controls.Add(_body);
 
             _box.Value = current == null ? "" : current;
-            _box.Location = new Point(16, 38);
+            _box.Location = new Point(0, 0);
             _box.Size = new Size(340, 26);
             _box.BackColor = Color.FromArgb(40, 42, 48);
             _box.ForeColor = Color.FromArgb(228, 231, 238);
             _box.BorderStyle = BorderStyle.FixedSingle;
-            Controls.Add(_box);
+            _box.ValueCaptured += delegate { _row.ValueText = _box.Value; };
+            _body.Controls.Add(_box);
 
             Label hint = new Label();
             hint.Text = "点这里，然后直接按组合键（修饰键 + 主键；Esc 取消、Delete 清空）";
             hint.AutoSize = false;
             hint.Size = new Size(340, 18);
-            hint.Location = new Point(16, 70);
+            hint.Location = new Point(0, 34);
             hint.ForeColor = Color.FromArgb(150, 156, 168);
             hint.Font = new Font("Microsoft YaHei UI", 8.5f);
-            Controls.Add(hint);
+            _body.Controls.Add(hint);
 
-            // Same strip as the hint: validation errors replace the format reminder instead of
-            // appearing somewhere the user is not looking.
+            // Same strip as the hint: validation errors replace the reminder instead of appearing
+            // somewhere the user is not looking.
             _msg.AutoSize = false;
             _msg.Size = new Size(340, 18);
-            _msg.Location = new Point(16, 70);
+            _msg.Location = new Point(0, 34);
             _msg.ForeColor = Color.FromArgb(255, 150, 140);
             _msg.Font = new Font("Microsoft YaHei UI", 8.5f);
-            Controls.Add(_msg);
+            _body.Controls.Add(_msg);
             _msg.BringToFront();
 
-            Button save = MkButton("保存", 14, 120, 96);
-            save.Click += delegate { SavePressed(false); };
-            Controls.Add(save);
+            _save = MkButton("保存", 0, 64, 96);
+            _save.Click += delegate { SavePressed(false); };
+            _body.Controls.Add(_save);
 
-            Button both = MkButton("保存并重启", 118, 120, 118);
-            both.Click += delegate { SavePressed(true); };
-            Controls.Add(both);
+            _both = MkButton("保存并重启", 104, 64, 118);
+            _both.Click += delegate { SavePressed(true); };
+            _body.Controls.Add(_both);
 
-            Button cancel = MkButton("取消", 244, 120, 96);
+            Button cancel = MkButton("取消", 230, 64, 96);
             cancel.DialogResult = DialogResult.Cancel;
-            Controls.Add(cancel);
+            _body.Controls.Add(cancel);
 
             CancelButton = cancel;
-            AcceptButton = both;
+            AcceptButton = _both;
+
+            ApplyLayout(false);
+        }
+
+        // Collapsed by default: the dialog opens as a one-row list, and expanding the row is what
+        // reveals the recorder. Height is set explicitly so the hidden body leaves no gap.
+        void ApplyLayout(bool expanded)
+        {
+            _row.Expanded = expanded;
+            _bodyOpen = expanded;
+            _body.Visible = expanded;
+            AcceptButton = expanded ? _both : null;
+            ClientSize = new Size(372, expanded ? 212 : 74);
+        }
+
+        internal AccordionRow FirstRow { get { return _row; } }
+
+        // Control.Visible reports false while the whole form is still hidden, so the layout state is
+        // tracked separately: that is what the headless test can assert on.
+        internal bool BodyVisible { get { return _bodyOpen; } }
+
+        public void ToggleFirstRow()
+        {
+            ApplyLayout(!_row.Expanded);
         }
 
         // Every key goes through here while the recording box has focus, because Alt combinations
@@ -3664,6 +3803,19 @@ namespace QuoteStack
                 return true;
             }
             return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        // Escape closes the dialog even while it is collapsed (the cancel button lives inside the
+        // hidden body). Esc inside the recorder is consumed earlier by HotkeyBox, so it still only
+        // undoes the recording there.
+        protected override bool ProcessDialogKey(Keys keyData)
+        {
+            if (keyData == Keys.Escape)
+            {
+                DialogResult = DialogResult.Cancel;
+                return true;
+            }
+            return base.ProcessDialogKey(keyData);
         }
 
         Button MkButton(string text, int x, int y, int w)
