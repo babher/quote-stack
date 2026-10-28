@@ -348,6 +348,33 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
+                // Test-only hook for red line 8: builds the launch-refusal line the real code
+                // logs, checks it for a profile path, and counts path-carrying lines in the log.
+                if (a == "--logprobe" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    StringBuilder sbL = new StringBuilder();
+                    string line = FloatBar.HotkeyFailureLine("Alt+Q");
+                    sbL.Append("line=").Append(line).Append("\n");
+                    sbL.Append("line-has-user-path=").Append(line.IndexOf("Users\\", StringComparison.OrdinalIgnoreCase) >= 0 ? "yes" : "no").Append("\n");
+                    Store.LogStartup(line);
+                    string logPath = Path.Combine(Store.DirPath, "startup.log");
+                    string all = File.Exists(logPath) ? File.ReadAllText(logPath, Encoding.UTF8) : "";
+                    int withPath = 0;
+                    int lines = 0;
+                    foreach (string l in all.Split('\n'))
+                    {
+                        if (l.Length == 0) continue;
+                        lines++;
+                        if (l.IndexOf("Users\\", StringComparison.OrdinalIgnoreCase) >= 0) withPath++;
+                    }
+                    sbL.Append("log-lines=").Append(lines).Append("\n");
+                    sbL.Append("log-lines-with-path=").Append(withPath).Append("\n");
+                    sbL.Append("log-tail=").Append(all.Length > 200 ? all.Substring(all.Length - 200) : all).Append("\n");
+                    File.WriteAllText(outPath, sbL.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
                 // Test-only hook for the remembered drawer size: writes a config that only has a
                 // hotkey, saves a size, and checks the hotkey survived the rewrite.
                 if (a == "--drawertest" && Array.IndexOf(args, a) + 1 < args.Length)
@@ -1358,7 +1385,7 @@ namespace QuoteStack
 
             if (!Native.RegisterHotKey(Handle, HOTKEY_ID, mods, vk))
             {
-                Store.LogStartup("hotkey-register-failed: " + wanted + " (config: " + _cfgPath + ")");
+                Store.LogStartup(HotkeyFailureLine(wanted));
                 MessageBox.Show(
                     "热键 " + wanted + " 注册失败，可能已被其他程序占用。\n\n" +
                     "请把配置文件里的 hotkey 改成别的组合（例如 Alt+Shift+Q），保存后重新启动：\n" + _cfgPath,
@@ -1402,6 +1429,14 @@ namespace QuoteStack
         {
             return string.Equals(Native.ProcessNameOf(Native.GetForegroundWindow()),
                 "msedge.exe", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Launch refusals are logged so a failed start is diagnosable, but the log deliberately
+        // carries no filesystem path (red line 8: no paths in logs). One source of truth, so a
+        // future call site cannot reintroduce the profile path by accident.
+        public static string HotkeyFailureLine(string hotkey)
+        {
+            return "hotkey-register-failed: " + hotkey;
         }
 
         void StartCapture()

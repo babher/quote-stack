@@ -94,7 +94,7 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 | `%APPDATA%\quote-stack\stack.ndjson` | 引用记录，一行一条 JSON（`id`/`ts`/`source`/`title`/`text`/`url`）；最多保留 500 条，超出后自动删除最旧的 |
 | `%APPDATA%\quote-stack\used.ndjson` | 已插入过哪些引用（`ts`/`key`，`key` 即记录 `id`；v1 旧记录回退为文本哈希），供「清理已引用」使用；记录被删除时同步清理 |
 | `%APPDATA%\quote-stack\config.json` | 热键配置（`hotkey`）与抽屉尺寸记忆（`drawerW`/`drawerH`，字符串形式） |
-| `%APPDATA%\quote-stack\startup.log` | 启动与采集诊断，**只记计数与错误码，不记正文** |
+| `%APPDATA%\quote-stack\startup.log` | 启动与采集诊断，**只记计数与错误码，不记正文、不记网址、不记文件路径** |
 | `%LOCALAPPDATA%\qsapp\QuoteStack.exe` | 安装后的程序本体 |
 
 删除 `%APPDATA%\quote-stack\` 与 `%LOCALAPPDATA%\qsapp\` 即完成卸载（没有注册表项、没有自启项）。
