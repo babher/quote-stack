@@ -2003,7 +2003,7 @@ namespace QuoteStack
             // shown instead of blanking the drawer.
             if (fresh.Count == 0 && _items.Count > 0)
             {
-                SetHint("刷新失败：读不到引用文件");
+                SetHint("刷新失败（文件被占用？）");
                 return;
             }
 
