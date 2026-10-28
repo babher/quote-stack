@@ -112,6 +112,42 @@ namespace QuoteStack
                     Environment.Exit(0);
                     return;
                 }
+                // Test-only hook: exercises the used-journal and the atomic delete without
+                // the UI. Prints what was marked, what was deleted, what survived, and
+                // whether any .tmp file was left behind.
+                if (a == "--cleanuptest" && Array.IndexOf(args, a) + 1 < args.Length)
+                {
+                    string outPath = args[Array.IndexOf(args, a) + 1];
+                    string err;
+                    StringBuilder sb = new StringBuilder();
+                    Store.Append("AAA 第一条", "msedge.exe", "t", "https://example.com/a", out err);
+                    Store.Append("BBB 第二条", "msedge.exe", "t", "", out err);
+                    Store.Append("CCC 第三条", "msedge.exe", "t", "", out err);
+                    sb.Append("after-append=").Append(Store.Count()).Append("\n");
+
+                    Store.AppendUsed(Store.Hash12("AAA 第一条"));
+                    Store.AppendUsed(Store.Hash12("CCC 第三条"));
+                    List<Record> usedList = Records.LoadUsedOnly();
+                    sb.Append("used=");
+                    foreach (Record r in usedList) sb.Append(r.Text).Append(",");
+                    sb.Append("\n");
+
+                    HashSet<string> drop = new HashSet<string>(StringComparer.Ordinal);
+                    drop.Add(Store.Hash12("AAA 第一条"));
+                    int removed;
+                    bool ok = Store.DeleteByHash(drop, out removed, out err);
+                    sb.Append("delete-ok=").Append(ok).Append(" removed=").Append(removed)
+                      .Append(" error=").Append(err == null ? "-" : err).Append("\n");
+                    sb.Append("after-delete=").Append(Store.Count()).Append("\n");
+                    sb.Append("used-after-delete=");
+                    foreach (Record r in Records.LoadUsedOnly()) sb.Append(r.Text).Append(",");
+                    sb.Append("\n");
+                    sb.Append("tmp-left=").Append(File.Exists(Store.FilePath + ".tmp") ? "yes" : "no").Append("\n");
+                    sb.Append("usedtmp-left=").Append(File.Exists(Store.UsedPath + ".tmp") ? "yes" : "no").Append("\n");
+                    File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
+                    Environment.Exit(0);
+                    return;
+                }
                 // Test-only hook: ticks rows out of order and prints what Checked() returns,
                 // so the "insert in the order the user ticked" rule can be checked headlessly.
                 if (a == "--ordertest" && Array.IndexOf(args, a) + 1 < args.Length)
@@ -235,6 +271,179 @@ namespace QuoteStack
                     error = ex.GetType().Name + ": " + ex.Message;
                     return false;
                 }
+            }
+        }
+
+        // Which quotes have already been inserted at least once. Kept in its own
+        // journal so the capture file stays append-only: marking a record never
+        // rewrites the stack, only deletion does.
+        public static string UsedPath
+        {
+            get { return Path.Combine(DirPath, "used.ndjson"); }
+        }
+
+        // 12 hex chars of SHA-256 over the exact text. Used as the identity of a quote
+        // for the used-journal and for deletion, because the stack has no id column.
+        public static string Hash12(string text)
+        {
+            if (text == null) return "";
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                byte[] h = sha.ComputeHash(Utf8.GetBytes(text));
+                var sb = new StringBuilder(12);
+                for (int i = 0; i < 6; i++) sb.Append(h[i].ToString("x2"));
+                return sb.ToString();
+            }
+        }
+
+        public static bool AppendUsed(string hash)
+        {
+            if (hash == null || hash.Length != 12) return false;
+            lock (Gate)
+            {
+                try
+                {
+                    Directory.CreateDirectory(DirPath);
+                    string line = "{\"ts\":\"" + DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz")
+                        + "\",\"sha12\":\"" + hash + "\"}\n";
+                    byte[] bytes = Utf8.GetBytes(line);
+                    using (var fs = new FileStream(UsedPath, FileMode.Append, FileAccess.Write, FileShare.Read))
+                    {
+                        fs.Write(bytes, 0, bytes.Length);
+                        fs.Flush();
+                    }
+                    return true;
+                }
+                catch { return false; }
+            }
+        }
+
+        // Same-volume replace of dst with the fully written src, in one metadata
+        // operation. File.Replace is not usable here: on this .NET it fails with
+        // "路径的形式不合法" for a temp file in the same directory, and the delete would
+        // then have to be two steps (delete + rename), which can lose the stack if it
+        // is interrupted. Red line 9 wants temp-file -> replace, so use the primitive
+        // that actually does it.
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool MoveFileExW(string existingFileName, string newFileName, int flags);
+
+        internal static bool ReplaceFileAtomic(string src, string dst)
+        {
+            const int MOVEFILE_REPLACE_EXISTING = 0x1;
+            const int MOVEFILE_WRITE_THROUGH = 0x8;
+            return MoveFileExW(src, dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        }
+
+        public static HashSet<string> LoadUsed()        {
+            HashSet<string> set = new HashSet<string>(StringComparer.Ordinal);
+            try
+            {
+                if (!File.Exists(UsedPath)) return set;
+                using (var fs = new FileStream(UsedPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var sr = new StreamReader(fs, Utf8))
+                {
+                    string line;
+                    while ((line = sr.ReadLine()) != null)
+                    {
+                        string h = JsonField(line, "sha12");
+                        if (h != null && h.Length == 12) set.Add(h);
+                    }
+                }
+            }
+            catch { }
+            return set;
+        }
+
+        // Removes every record whose text hash is in drop. The rewrite goes to a temp
+        // file in the same directory and then File.Replace, so an interrupted delete
+        // cannot leave a half-written stack (red line 9: no non-atomic writes).
+        public static bool DeleteByHash(HashSet<string> drop, out int removed, out string error)
+        {
+            removed = 0;
+            error = null;
+            if (drop == null || drop.Count == 0) return true;
+            lock (Gate)
+            {
+                string tmp = null;
+                try
+                {
+                    Directory.CreateDirectory(DirPath);
+                    if (!File.Exists(FilePath)) return true;
+                    List<string> keep = new List<string>();
+                    using (var fs = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (var sr = new StreamReader(fs, Utf8))
+                    {
+                        string line;
+                        while ((line = sr.ReadLine()) != null)
+                        {
+                            if (line.Trim().Length == 0) continue;
+                            string text = JsonField(line, "text");
+                            if (text == null) continue;
+                            if (drop.Contains(Hash12(text))) { removed++; continue; }
+                            keep.Add(line);
+                        }
+                    }
+                    if (removed == 0) return true;
+                    tmp = FilePath + ".tmp";
+                    using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                    {
+                        foreach (string l in keep)
+                        {
+                            byte[] b = Utf8.GetBytes(l + "\n");
+                            fs.Write(b, 0, b.Length);
+                        }
+                        fs.Flush(true);
+                    }
+                    if (!ReplaceFileAtomic(tmp, FilePath))
+                        throw new IOException("atomic-replace-failed err=" + Marshal.GetLastWin32Error());
+                    tmp = null;
+                    PruneUsed(drop);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    error = ex.GetType().Name + ": " + ex.Message;
+                    if (tmp != null) { try { File.Delete(tmp); } catch { } }
+                    return false;
+                }
+            }
+        }
+
+        static void PruneUsed(HashSet<string> drop)        {
+            string tmp = null;
+            try
+            {
+                if (!File.Exists(UsedPath)) return;
+                List<string> keep = new List<string>();
+                using (var fs = new FileStream(UsedPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var sr = new StreamReader(fs, Utf8))
+                {
+                    string line;
+                    while ((line = sr.ReadLine()) != null)
+                    {
+                        if (line.Trim().Length == 0) continue;
+                        string h = JsonField(line, "sha12");
+                        if (h != null && drop.Contains(h)) continue;
+                        keep.Add(line);
+                    }
+                }
+                tmp = UsedPath + ".tmp";
+                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    foreach (string l in keep)
+                    {
+                        byte[] b = Utf8.GetBytes(l + "\n");
+                        fs.Write(b, 0, b.Length);
+                    }
+                    fs.Flush(true);
+                }
+                if (!ReplaceFileAtomic(tmp, UsedPath))
+                    throw new IOException("atomic-replace-failed err=" + Marshal.GetLastWin32Error());
+                tmp = null;
+            }
+            catch
+            {
+                if (tmp != null) { try { File.Delete(tmp); } catch { } }
             }
         }
 
@@ -365,8 +574,21 @@ namespace QuoteStack
         {
             string tmp = FilePath + ".tmp";
             File.WriteAllText(tmp, content, new UTF8Encoding(false));
-            if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null);
-            else File.Move(tmp, FilePath);
+            if (File.Exists(FilePath))
+            {
+                if (!Store.ReplaceFileAtomic(tmp, FilePath))
+                {
+                    // Fallback when the metadata swap is refused: this path is not atomic,
+                    // so it is logged instead of being silent.
+                    Store.LogStartup("config: atomic-replace-failed err=" + Marshal.GetLastWin32Error());
+                    File.Delete(FilePath);
+                    File.Move(tmp, FilePath);
+                }
+            }
+            else
+            {
+                File.Move(tmp, FilePath);
+            }
         }
     }
 
@@ -746,6 +968,7 @@ namespace QuoteStack
             _tray.Text = "QuoteStack";
             var menu = new ContextMenuStrip();
             menu.Items.Add("打开引用列表", null, delegate { OpenDrawer(); });
+            menu.Items.Add("清理已引用的内容…", null, delegate { OpenCleanup(); });
             menu.Items.Add("打开配置", null, delegate
             {
                 try { Process.Start(new ProcessStartInfo(_cfgPath) { UseShellExecute = true }); }
@@ -932,6 +1155,7 @@ namespace QuoteStack
             IntPtr target = Native.GetForegroundWindow();
             _drawer = new Drawer(target);
             _drawer.FormClosed += delegate { _drawer = null; Invalidate(); };
+            _drawer.CleanupRequested += delegate { OpenCleanup(); };
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
             int w = 380;
             int h = Math.Min(520, wa.Height - 96);
@@ -942,6 +1166,43 @@ namespace QuoteStack
             _drawer.BringToFront();
             _drawer.Activate();
             _drawer.ListView.Focus();
+        }
+
+        // Batch delete of the quotes that were already inserted at least once. The
+        // rewrite itself is atomic (Store.DeleteByHash); the user confirms the count
+        // first because there is no undo.
+        void OpenCleanup()
+        {
+            List<Record> used = Records.LoadUsedOnly();
+            bool hadDrawer = _drawer != null && !_drawer.IsDisposed && _drawer.Visible;
+            if (hadDrawer) _drawer.Hide();
+            try
+            {
+                using (CleanupForm f = new CleanupForm(used))
+                {
+                    f.ShowDialog(this);
+                    if (f.Deleted > 0)
+                    {
+                        _count = Math.Max(0, Store.Count());
+                        _status = "已删除 " + f.Deleted + " 条已引用内容";
+                        _flashKind = KindOk;
+                        _flash.Stop();
+                        _flash.Start();
+                        Invalidate();
+                    }
+                }
+            }
+            finally
+            {
+                if (hadDrawer && _drawer != null && !_drawer.IsDisposed)
+                {
+                    _drawer.Show();
+                    _drawer.BringToFront();
+                    _drawer.Activate();
+                    _drawer.ListView.Reload();
+                    _drawer.ListView.Focus();
+                }
+            }
         }
 
         void PerformInsert()
@@ -970,13 +1231,22 @@ namespace QuoteStack
 
             if (ok)
             {
+                // Recorded per quote, in a separate journal, so the cleanup panel can
+                // offer exactly the quotes that were already used.
+                int marked = 0;
+                foreach (Record r in chosen)
+                {
+                    if (Store.AppendUsed(Store.Hash12(r.Text))) marked++;
+                    r.Used = true;
+                }
+                Store.LogStartup("deliver: marked-used=" + marked + "/" + chosen.Count);
                 _count = Math.Max(0, Store.Count());
                 _preview = chosen[0].Text;
                 _status = "已插入 " + chosen.Count + " 条";
                 _flashKind = KindOk;
-                // Ticked off the list on purpose: a second Enter would otherwise insert
-                // the same quote twice.
-                _drawer.ListView.Uncheck(chosen);
+                // Reload re-reads the stack, which both clears the ticks (a second insert
+                // must not repeat the same quote) and paints the "已引用" marker.
+                _drawer.ListView.Reload();
                 _drawer.ListView.SetHint("已插入 " + chosen.Count + " 条 · 可继续勾选");
             }
             else
@@ -1118,6 +1388,9 @@ namespace QuoteStack
         public string Source;
         public string Url;
         public DateTimeOffset When;
+        // True once this quote has been inserted at least once; drives the marker in
+        // the list and the cleanup panel.
+        public bool Used;
     }
 
     static class Records
@@ -1133,6 +1406,7 @@ namespace QuoteStack
             {
                 string path = Store.FilePath;
                 if (!File.Exists(path)) return list;
+                HashSet<string> used = Store.LoadUsed();
                 List<string> lines = new List<string>();
                 using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 using (StreamReader sr = new StreamReader(fs, Utf8))
@@ -1150,11 +1424,21 @@ namespace QuoteStack
                     r.Source = AppLabel(Store.JsonField(lines[i], "source"));
                     r.Url = Store.JsonField(lines[i], "url");
                     r.When = ParseWhen(Store.JsonField(lines[i], "ts"));
+                    r.Used = used.Contains(Store.Hash12(text));
                     list.Add(r);
                 }
             }
             catch { }
             return list;
+        }
+
+        // Only the quotes that were already inserted at least once, newest first.
+        public static List<Record> LoadUsedOnly()
+        {
+            List<Record> all = Load(int.MaxValue);
+            List<Record> only = new List<Record>();
+            foreach (Record r in all) if (r.Used) only.Add(r);
+            return only;
         }
 
         static string AppLabel(string proc)
@@ -1226,7 +1510,20 @@ namespace QuoteStack
             string backup;
             int formats;
             uint seq;
-            Native.ClipboardSnapshot(out backup, out formats, out seq);
+            // Bug fix: the return value used to be ignored. When the clipboard could not
+            // be read at all, backup stayed null and the restore below called
+            // EmptyClipboard(), which silently wiped whatever the user had copied.
+            bool hadSnapshot = Native.ClipboardSnapshot(out backup, out formats, out seq);
+            if (!hadSnapshot)
+            {
+                message = "剪贴板被占用，未发送按键";
+                log = "deliver: abort snapshot-failed seq=" + seq + " textLen=" + text.Length;
+                return false;
+            }
+            // A non-text clipboard (an image, files) cannot be put back: only the
+            // CF_UNICODETEXT form is backed up. In that case leaving our composed text on
+            // the clipboard is strictly better than emptying it.
+            bool canRestore = backup != null || formats == 0;
             if (!Native.SetClipboardText(text))
             {
                 message = "剪贴板写入失败";
@@ -1268,12 +1565,25 @@ namespace QuoteStack
             // Who actually had the focus when the key went in: without this the log cannot
             // tell "V was swallowed" from "V went to the wrong window".
             string fgAfter = Native.ProcessNameOf(Native.GetForegroundWindow());
-            Native.ClipboardRestore(backup);
+            if (canRestore) Native.ClipboardRestore(backup);
+
+            // Bug fix: SendInput returns how many events it actually inserted. A count
+            // below 4 means the paste chord never reached any window, and reporting
+            // "已插入" for that was a lie the UI told.
+            if (sent != 4)
+            {
+                message = "粘贴失败（按键未送达）";
+                log = "deliver: send-failed sent=" + sent + " target=" + Native.ProcessNameOf(target)
+                    + " fgAfterSend=" + fgAfter + " restored=" + canRestore
+                    + " textLen=" + text.Length + " costMs=" + sw.ElapsedMilliseconds;
+                return false;
+            }
 
             log = "deliver: sent=" + sent + " target=" + Native.ProcessNameOf(target)
                 + " fgAfterSend=" + fgAfter
                 + " waitedMods=" + waitedMods + " released=" + released
-                + " textLen=" + text.Length + " restored=true costMs=" + sw.ElapsedMilliseconds;
+                + " textLen=" + text.Length + " restored=" + canRestore
+                + " costMs=" + sw.ElapsedMilliseconds;
             return true;
         }
     }
@@ -1316,6 +1626,11 @@ namespace QuoteStack
         string _hint;
 
         public event EventHandler CloseRequested;
+
+        public event EventHandler CleanupRequested;
+
+        // Hit area of the "清理已引用" label in the bottom bar; empty when hidden.
+        RectangleF _clearRect;
 
         public QuoteListView()
         {
@@ -1600,7 +1915,8 @@ namespace QuoteStack
                     g.DrawString(body, _fBody, b, new RectangleF(PadLeft, y + BodyTop, BodyWidth, _bodyH[i]));
 
                 float metaY = y + BodyTop + _bodyH[i] + 4;
-                string meta = _items[i].Source + " · " + Records.Stamp(_items[i], now);
+                string meta = _items[i].Source + " · " + Records.Stamp(_items[i], now)
+                    + (_items[i].Used ? " · 已引用" : "");
                 using (var b = new SolidBrush(Color.FromArgb(150, 156, 170)))
                     g.DrawString(meta, _fMeta, b, PadLeft, metaY);
 
@@ -1661,6 +1977,24 @@ namespace QuoteStack
             Color barColor = _hint != null ? Color.FromArgb(240, 170, 110) : Color.FromArgb(140, 146, 160);
             using (var b = new SolidBrush(barColor))
                 g.DrawString(bar, _fBar, b, PadLeft, barY + 9f);
+
+            // Right side of the bar: opens the cleanup panel. Only shown when there is
+            // something to clean, so the bar stays quiet on a fresh stack.
+            int usedCount = 0;
+            for (int i = 0; i < n; i++) if (_items[i].Used) usedCount++;
+            if (usedCount > 0)
+            {
+                string clr = "清理已引用(" + usedCount + ")";
+                SizeF csz = g.MeasureString(clr, _fBar);
+                float cx = Width - PadRight - csz.Width;
+                using (var b = new SolidBrush(Color.FromArgb(120, 176, 255)))
+                    g.DrawString(clr, _fBar, b, cx, barY + 9f);
+                _clearRect = new RectangleF(cx - 6f, barY + 3f, csz.Width + 12f, BottomBarH - 5f);
+            }
+            else
+            {
+                _clearRect = RectangleF.Empty;
+            }
         }
 
         void DrawArrow(Graphics g, float cx, float cy, bool up)
@@ -1714,7 +2048,16 @@ namespace QuoteStack
             base.OnMouseDown(e);
             Focus();
             using (Graphics g = CreateGraphics()) { RebuildLayout(g); }
-            if (e.Y > ContentHeight) return;
+            if (e.Y > ContentHeight)
+            {
+                // The bottom bar is a control surface, not just a caption.
+                if (!_clearRect.IsEmpty && _clearRect.Contains(e.X, e.Y))
+                {
+                    EventHandler h = CleanupRequested;
+                    if (h != null) h(this, EventArgs.Empty);
+                }
+                return;
+            }
             int i = HitRow(e.Y);
             if (i < 0) return;
             if (CheckRect(i).Contains(e.X, e.Y))
@@ -1822,6 +2165,129 @@ namespace QuoteStack
         }
     }
 
+    // Batch removal of quotes that were inserted at least once. Plain controls on
+    // purpose: this panel is destructive, so it should look like a system dialog and
+    // not like part of the appealing drawer.
+    class CleanupForm : Form
+    {
+        readonly List<Record> _items;
+        readonly List<CheckBox> _boxes = new List<CheckBox>();
+        readonly Label _tip = new Label();
+
+        public int Deleted { get; private set; }
+
+        public CleanupForm(List<Record> items)
+        {
+            _items = items;
+            Text = "清理已引用的内容";
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition = FormStartPosition.CenterScreen;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            TopMost = true;
+            ClientSize = new Size(440, 470);
+            BackColor = Color.FromArgb(28, 28, 32);
+            ForeColor = Color.FromArgb(228, 231, 238);
+            Font = new Font("Microsoft YaHei UI", 9.5f);
+
+            Panel panel = new Panel();
+            panel.Location = new Point(14, 12);
+            panel.Size = new Size(412, 370);
+            panel.AutoScroll = true;
+            panel.BackColor = Color.FromArgb(28, 28, 32);
+            Controls.Add(panel);
+
+            int y = 2;
+            if (_items.Count == 0)
+            {
+                Label empty = new Label();
+                empty.Text = "还没有插入过的内容。";
+                empty.ForeColor = Color.FromArgb(150, 156, 168);
+                empty.AutoSize = true;
+                empty.Location = new Point(4, 8);
+                panel.Controls.Add(empty);
+            }
+            foreach (Record r in _items)
+            {
+                CheckBox cb = new CheckBox();
+                string body = r.Text.Replace("\r", " ").Replace("\n", " ").Trim();
+                if (body.Length > 34) body = body.Substring(0, 34) + "…";
+                cb.Text = Records.Stamp(r, DateTimeOffset.Now) + "  ·  " + Records.SrcLabel(r) + "\n" + body;
+                cb.Tag = r;
+                cb.Checked = true;
+                cb.AutoSize = false;
+                cb.Size = new Size(384, 46);
+                cb.Location = new Point(2, y);
+                cb.ForeColor = Color.FromArgb(228, 231, 238);
+                cb.BackColor = Color.FromArgb(28, 28, 32);
+                cb.FlatStyle = FlatStyle.Flat;
+                panel.Controls.Add(cb);
+                _boxes.Add(cb);
+                y += 50;
+            }
+
+            _tip.AutoSize = false;
+            _tip.Size = new Size(412, 22);
+            _tip.Location = new Point(14, 390);
+            _tip.ForeColor = Color.FromArgb(150, 156, 168);
+            _tip.Text = _items.Count + " 条已引用内容";
+            Controls.Add(_tip);
+
+            Button del = new Button();
+            del.Text = "删除选中";
+            del.Size = new Size(130, 32);
+            del.Location = new Point(14, 420);
+            del.FlatStyle = FlatStyle.Flat;
+            del.ForeColor = Color.FromArgb(255, 200, 190);
+            del.BackColor = Color.FromArgb(52, 40, 40);
+            del.Click += delegate { DeleteChecked(); };
+            Controls.Add(del);
+
+            Button cancel = new Button();
+            cancel.Text = "取消";
+            cancel.Size = new Size(92, 32);
+            cancel.Location = new Point(ClientSize.Width - 92 - 14, 420);
+            cancel.FlatStyle = FlatStyle.Flat;
+            cancel.DialogResult = DialogResult.Cancel;
+            Controls.Add(cancel);
+            CancelButton = cancel;
+        }
+
+        void DeleteChecked()
+        {
+            HashSet<string> drop = new HashSet<string>(StringComparer.Ordinal);
+            int n = 0;
+            foreach (CheckBox cb in _boxes)
+            {
+                if (!cb.Checked) continue;
+                Record r = (Record)cb.Tag;
+                drop.Add(Store.Hash12(r.Text));
+                n++;
+            }
+            if (n == 0)
+            {
+                _tip.Text = "没有勾选内容";
+                return;
+            }
+            DialogResult ask = MessageBox.Show(this,
+                "删除 " + n + " 条已引用内容？删除后不可恢复。", "确认删除",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (ask != DialogResult.Yes) return;
+
+            int removed;
+            string err;
+            if (!Store.DeleteByHash(drop, out removed, out err))
+            {
+                _tip.Text = "删除失败：" + err;
+                return;
+            }
+            Deleted = removed;
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+    }
+
     class Drawer : Form
     {
         const int WM_NCHITTEST = 0x0084;
@@ -1854,8 +2320,15 @@ namespace QuoteStack
             _list.Dock = DockStyle.Fill;
             Controls.Add(_list);
             _list.CloseRequested += delegate { Close(); };
+            _list.CleanupRequested += delegate
+            {
+                EventHandler h = CleanupRequested;
+                if (h != null) h(this, EventArgs.Empty);
+            };
             _list.Reload();
         }
+
+        public event EventHandler CleanupRequested;
 
         public IntPtr TargetWindow { get { return _target; } }
 

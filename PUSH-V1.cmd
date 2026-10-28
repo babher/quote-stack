@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-echo ==== Quote Stack v1  uploading to GitHub ====
+echo ==== Quote Stack v1.1  uploading to GitHub ====
 echo.
 
 git remote get-url origin 1>nul 2>nul
@@ -40,17 +40,17 @@ git push -u origin "!RB!"
 if errorlevel 1 goto fail
 
 echo.
-echo        pushing tag v1 ...
-git push origin v1
+echo        pushing tags v1 and v1.1 ...
+git push origin --tags
 if errorlevel 1 (
-  echo        tag v1 exists on GitHub at an older commit - overwriting the tag only
-  git push -f origin v1
+  echo        a tag already exists on GitHub at an older commit - overwriting tags only
+  git push -f origin --tags
   if errorlevel 1 goto fail
 )
 
 echo.
 echo [OK] done.  https://github.com/babher/quote-stack
-echo      Expected: 11 files, and a v1 tag.
+echo      Expected: 12 files, and tags v1 + v1.1.
 pause
 exit /b 0
 

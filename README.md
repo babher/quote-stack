@@ -57,6 +57,14 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 - `Esc` 关闭抽屉
 - 勾好后按**热键**插入（不是回车）；插入后抽屉保持打开，刚插入的条目自动取消勾选
 - 插入成功会把内容放进剪贴板、按一次 `Ctrl+V`、然后**把剪贴板还原**成插入前的内容
+- 插过的条目，meta 行会多出 `已引用`；抽屉底栏右侧出现 `清理已引用(N)`
+
+清理已引用的内容（批量删除）：
+
+- 点抽屉底栏的 `清理已引用(N)`，或托盘右键 `清理已引用的内容…`
+- 弹出的列表默认全选，取消不想删的，点 `删除选中` → 二次确认 → 删除
+- 删除是**原子替换**（先写临时文件再替换），中途崩溃不会留下半个文件
+- 删除不可恢复；删掉的条目会同时从 `used.ndjson` 里移除
 
 ## 配置
 
@@ -76,6 +84,7 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 | 文件 | 内容 |
 |---|---|
 | `%APPDATA%\quote-stack\stack.ndjson` | 引用记录，一行一条 JSON（`ts`/`source`/`title`/`text`/`url`） |
+| `%APPDATA%\quote-stack\used.ndjson` | 已插入过哪些引用（`ts`/`sha12`），供「清理已引用」使用；记录被删除时同步清理 |
 | `%APPDATA%\quote-stack\config.json` | 热键配置 |
 | `%APPDATA%\quote-stack\startup.log` | 启动与采集诊断，**只记计数与错误码，不记正文** |
 | `%LOCALAPPDATA%\qsapp\QuoteStack.exe` | 安装后的程序本体 |
