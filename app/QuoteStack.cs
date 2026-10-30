@@ -985,7 +985,9 @@ namespace QuoteStack
             int sentL = 0;
             int urlRawLen = -1;
             string urlStep = "skip";
-            if (text != null && text.Trim().Length > 0 && FloatBar.IsEdgeProc(proc))
+            // Pictures get the address too: an image copied from a page has no text, and the
+            // "no URL on images" hole was reported as "图片引入不显示引入地址" (m04356).
+            if (((text != null && text.Trim().Length > 0) || imgName != null) && FloatBar.IsEdgeProc(proc))
             {
                 urlStep = "unchanged";
                 // Two attempts: Ctrl+L focuses the address bar in Chromium, Alt+D is the
@@ -1317,23 +1319,17 @@ namespace QuoteStack
         {
             if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HOTKEY_ID)
             {
-                // One key, decided by what the user is doing (rules m01388, m03988, m04191):
-                //   drawer open + Edge foreground -> a selection there is a new quote
-                //   drawer open + anywhere else   -> insert (probing here would swallow the
-                //                                    target's own text as a quote and the
-                //                                    insert would never happen)
-                //   drawer closed                 -> probe for a selection; no selection
-                //                                    opens the drawer for inserting
+                // One key, decided by what the user is doing (rules m01388, m03988, m04191, m04356):
+                //   drawer focused -> insert (the caret arguments already made)
+                //   anywhere else  -> probe for a selection first; a selection is a quote, and
+                //                     only "nothing selected" turns the same key into insert.
+                // The probe is what makes non-browser programs work: it decides by evidence
+                // rather than by knowing which app is in front. Terminals are still skipped
+                // because Ctrl+C there is an interrupt, so they go straight to insert.
                 bool drawerUp = _drawer != null && !_drawer.IsDisposed && _drawer.Visible;
-                if (drawerUp)
-                {
-                    if (!IsEdgeForeground()) { PerformInsert(); return; }
-                    StartCapture();
-                    return;
-                }
-                // Any program can be a capture source now (rule m03988). Terminals are the one
-                // exception: Ctrl+C there is an interrupt, so the drawer opens instead of a probe.
+                if (drawerUp && _drawer.ContainsFocus) { PerformInsert(); return; }
                 if (!IsTerminalForeground()) { StartCapture(); return; }
+                if (drawerUp) { PerformInsert(); return; }
                 OpenOrFocusDrawer();
                 return;
             }
@@ -1423,12 +1419,19 @@ namespace QuoteStack
             }
             else if (!r.HadSelection)
             {
-                // No selection found: the same key means "insert here", so the drawer opens
-                // on the window that was foreground a moment ago.
+                // Nothing was selected where the key was pressed, so the same key means "insert".
+                // If the drawer is already open that is the whole action — asking the user to
+                // press again because the drawer happened to be open was the "按好几下才插入"
+                // complaint (m04191).
                 _status = null;
                 _flashKind = KindNone;
                 _flash.Stop();
                 Invalidate();
+                if (_drawer != null && !_drawer.IsDisposed && _drawer.Visible)
+                {
+                    PerformInsert();
+                    return;
+                }
                 OpenOrFocusDrawer();
                 return;
             }
@@ -2288,6 +2291,7 @@ namespace QuoteStack
 
         public void Reload()
         {
+            ClearThumbs();
             _items = Records.Load(int.MaxValue);
             _open = new bool[_items.Count];
             _checked = new bool[_items.Count]; // nothing is checked until the user says so
@@ -2306,6 +2310,7 @@ namespace QuoteStack
         // index by one.
         public void ReloadPreserving()
         {
+            ClearThumbs();
             List<Record> fresh = Records.Load(int.MaxValue);
             // A read that suddenly returns nothing while rows are on screen is far more likely
             // to be a locked/renamed file than the user deleting everything: keep what is
@@ -2481,11 +2486,81 @@ namespace QuoteStack
 
         float BodyWidth { get { return Width - PadLeft - PadRight - CtrlZone; } }
 
-        float RowBodyH(Graphics g, int i)
+        // A picture needs pixels in the list, not the word「图片」. Decoded thumbnails are cached
+        // per file so scrolling a long list does not re-decode PNGs; the cache is dropped on
+        // every reload because files can be deleted underneath it.
+        const int MiniThumb = 40;
+        const int MaxThumbW = 240;
+        const int MaxThumbH = 160;
+        readonly System.Collections.Generic.Dictionary<string, Image> _thumbs
+            = new System.Collections.Generic.Dictionary<string, Image>();
+
+        void ClearThumbs()
+        {
+            foreach (System.Collections.Generic.KeyValuePair<string, Image> kv in _thumbs)
+                if (kv.Value != null) kv.Value.Dispose();
+            _thumbs.Clear();
+        }
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) ClearThumbs();
+            base.Dispose(disposing);
+        }
+
+        Image ThumbOf(Record r)
+        {
+            if (r == null || !r.HasImage) return null;
+            Image cached;
+            if (_thumbs.TryGetValue(r.Image, out cached)) return cached;
+            Image made = null;
+            try
+            {
+                string p = Store.ImagePath(r.Image);
+                if (System.IO.File.Exists(p))
+                {
+                    byte[] bytes = System.IO.File.ReadAllBytes(p);
+                    using (MemoryStream ms = new MemoryStream(bytes))
+                    using (Image raw = Image.FromStream(ms))
+                        made = new Bitmap(raw);
+                }
+            }
+            catch { made = null; }
+            _thumbs[r.Image] = made;
+            return made;
+        }
+
+        // Collapsed rows give the picture a small square on the right, expanded rows give it
+        // the full width under the text. Both reserve space in the layout, so nothing overlaps.
+        float TextWidth(int i)
+        {
+            if (!_items[i].HasImage || _open[i]) return BodyWidth;
+            return Math.Max(40f, BodyWidth - MiniThumb - 8);
+        }
+
+        float TextHeight(Graphics g, int i)
         {
             if (!_open[i]) return BodyLineH * 2;
-            SizeF sz = g.MeasureString(_items[i].DisplayText.Trim(), _fBody, new SizeF(BodyWidth, 0f));
+            SizeF sz = g.MeasureString(_items[i].DisplayText.Trim(), _fBody, new SizeF(TextWidth(i), 0f));
             return Math.Max(BodyLineH * 2, sz.Height);
+        }
+
+        float ThumbHeight(Graphics g, int i)
+        {
+            Image img = ThumbOf(_items[i]);
+            if (img == null || img.Width <= 0) return 0f;
+            float w = Math.Min(BodyWidth, MaxThumbW);
+            float h = w * img.Height / (float)img.Width;
+            if (h > MaxThumbH) h = MaxThumbH;
+            return h;
+        }
+
+        float RowBodyH(Graphics g, int i)
+        {
+            float textH = TextHeight(g, i);
+            if (!_items[i].HasImage) return textH;
+            if (!_open[i]) return Math.Max(textH, MiniThumb + 4);
+            float th = ThumbHeight(g, i);
+            return th <= 0f ? textH : textH + 6 + th;
         }
 
         void RebuildLayout(Graphics g)
@@ -2661,9 +2736,28 @@ namespace QuoteStack
 
                 string body = _open[i]
                     ? _items[i].DisplayText.Trim()
-                    : TwoLines(g, _items[i].DisplayText.Trim(), _fBody, BodyWidth);
+                    : TwoLines(g, _items[i].DisplayText.Trim(), _fBody, TextWidth(i));
                 using (var b = new SolidBrush(Color.FromArgb(232, 232, 238)))
-                    g.DrawString(body, _fBody, b, new RectangleF(PadLeft, y + BodyTop, BodyWidth, _bodyH[i]));
+                    g.DrawString(body, _fBody, b, new RectangleF(PadLeft, y + BodyTop, TextWidth(i), _bodyH[i]));
+
+                // The picture itself, so a quote of an image is recognisable without opening it.
+                Image thumb = ThumbOf(_items[i]);
+                if (thumb != null)
+                {
+                    if (_open[i])
+                    {
+                        float textH = TextHeight(g, i);
+                        float tw = Math.Min(BodyWidth, MaxThumbW);
+                        float th = tw * thumb.Height / (float)thumb.Width;
+                        if (th > MaxThumbH) { th = MaxThumbH; tw = th * thumb.Width / (float)thumb.Height; }
+                        g.DrawImage(thumb, new Rectangle(PadLeft, (int)(y + BodyTop + textH + 6), (int)tw, (int)th));
+                    }
+                    else
+                    {
+                        g.DrawImage(thumb, new Rectangle((int)(PadLeft + BodyWidth - MiniThumb),
+                            (int)(y + BodyTop + 2), MiniThumb, MiniThumb));
+                    }
+                }
 
                 float metaY = y + BodyTop + _bodyH[i] + 4;
                 string meta = _items[i].Source + " · " + Records.Stamp(_items[i], now)
