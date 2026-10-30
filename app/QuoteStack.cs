@@ -1398,6 +1398,74 @@ namespace QuoteStack
             });
         }
 
+        // A drop becomes a quote through the very same storage call as a capture, so a dragged
+        // quote behaves identically downstream (list, insert, cleanup). One record per picture;
+        // text that came with the drop rides on the first picture instead of being lost.
+        void SaveDropped(DragIn.Payload p)
+        {
+            if (p == null) { ShowDropFailure("无法读取拖入内容"); return; }
+            string text = p.Text == null ? "" : p.Text.Trim();
+            if (p.Images.Count == 0 && text.Length == 0) { ShowDropFailure("拖入内容为空"); return; }
+            string url = p.Url == null ? "" : p.Url;
+            string source = url.Length > 0 ? url : "拖拽";
+            int saved = 0;
+            string failure = null;
+            if (p.Images.Count == 0)
+            {
+                string err;
+                if (Store.Append(text, source, source, url, null, out err)) saved = 1;
+                else failure = err;
+            }
+            else
+            {
+                for (int i = 0; i < p.Images.Count; i++)
+                {
+                    string name = Guid.NewGuid().ToString("N").Substring(0, 12) + ".png";
+                    string imgErr;
+                    if (!Store.SaveImagePng(p.Images[i], name, out imgErr))
+                    {
+                        if (failure == null) failure = imgErr;
+                        continue;
+                    }
+                    string body = i == 0 ? text : "";
+                    string err;
+                    if (Store.Append(body, source, source, url, name, out err)) saved++;
+                    else if (failure == null) failure = err;
+                }
+            }
+            Store.LogStartup("dragin: fmts=" + p.Formats + " images=" + p.Images.Count
+                + " textLen=" + text.Length + " url=" + (url.Length > 0 ? "ok" : "none")
+                + " saved=" + saved);
+            if (saved == 0)
+            {
+                ShowDropFailure(failure == null ? "没有可保存的内容" : failure);
+                return;
+            }
+            _count = Store.Count();
+            if (_count < 0) _count = 0;
+            if (_drawer != null && !_drawer.IsDisposed && _drawer.Visible)
+                _drawer.ListView.ReloadPreserving();
+            _preview = text.Length > 0 ? text : "（图片）";
+            _status = failure == null ? null : "部分失败：" + failure;
+            _flashKind = failure == null ? KindOk : KindErr;
+            _flash.Interval = 2000;
+            _plusAt = Environment.TickCount;
+            _anim.Start();
+            _flash.Stop();
+            _flash.Start();
+            Invalidate();
+        }
+
+        void ShowDropFailure(string why)
+        {
+            _status = "拖入失败：" + why;
+            _flashKind = KindErr;
+            _flash.Interval = 2000;
+            _flash.Stop();
+            _flash.Start();
+            Invalidate();
+        }
+
         void Apply(CaptureResult r)
         {
             _busy = false;
@@ -1502,6 +1570,7 @@ namespace QuoteStack
             _drawer.CleanupRequested += delegate { OpenCleanup(); };
             _drawer.DeleteRequested += delegate { DeleteTicked(); };
             _drawer.SettingsRequested += delegate { OpenSettings(); };
+            _drawer.Dropped += delegate(DragIn.Payload p) { SaveDropped(p); };
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
             // Opens at the size the user last left it at (clamped to this screen); the floor is
             // Drawer.MinW/MinH, the narrowest width that still fits the three bar entries.
@@ -3662,6 +3731,317 @@ namespace QuoteStack
         }
     }
 
+    // A drop carries whatever the source program chose to put there: plain text, a bitmap,
+    // real files on disk, or — for a picture dragged out of a browser — a file group whose
+    // bytes are streamed on demand. Everything is normalised into one payload here, and the
+    // caller writes at most one record per picture: one drop never becomes two quotes for the
+    // same picture, no matter how many formats the source offered.
+    internal static class DragIn
+    {
+        public const int MaxImageBytes = 20 * 1024 * 1024;
+        // A browser can still be producing the bytes while the drop happens; the read stops
+        // after this budget instead of freezing the UI thread (asked for explicitly).
+        const int ReadBudgetMs = 3000;
+
+        public delegate void Handler(Payload payload);
+
+        public sealed class Payload
+        {
+            public readonly List<byte[]> Images = new List<byte[]>();
+            public string Text;
+            public string Url;
+            public string Formats = "";
+        }
+
+        // Decides the cursor ("copy" or "no entry"), so it must be pessimistic: a file drop
+        // that contains no picture is refused here rather than accepted and then failed.
+        public static bool Supported(System.Windows.Forms.IDataObject d)
+        {
+            if (d == null) return false;
+            if (Has(d, DataFormats.Bitmap)) return true;
+            if (Has(d, "FileGroupDescriptorW") || Has(d, "FileGroupDescriptor")) return true;
+            if (Has(d, DataFormats.FileDrop))
+            {
+                try
+                {
+                    string[] files = d.GetData(DataFormats.FileDrop) as string[];
+                    if (files != null)
+                        for (int i = 0; i < files.Length; i++)
+                            if (IsImageFile(files[i])) return true;
+                }
+                catch { }
+            }
+            return Has(d, DataFormats.UnicodeText) || Has(d, DataFormats.Text);
+        }
+
+        static bool Has(System.Windows.Forms.IDataObject d, string format)
+        {
+            try { return d.GetDataPresent(format); } catch { return false; }
+        }
+
+        public static Payload Read(System.Windows.Forms.IDataObject d)
+        {
+            Payload p = new Payload();
+            if (d == null) return p;
+            p.Formats = FormatList(d);
+            p.Url = UrlOf(d);
+            p.Text = TextOf(d);
+            List<byte[]> images = ImagesOf(d);
+            for (int i = 0; i < images.Count; i++) p.Images.Add(images[i]);
+            return p;
+        }
+
+        static string FormatList(System.Windows.Forms.IDataObject d)
+        {
+            string[] names = new string[]
+            {
+                "Bitmap", "FileDrop", "FileGroupDescriptorW", "FileGroupDescriptor",
+                "FileContents", "Html", "UriList", "UnicodeText", "Text"
+            };
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < names.Length; i++)
+            {
+                string n = names[i];
+                bool present =
+                    n == "Html" ? Has(d, DataFormats.Html)
+                    : n == "UriList" ? Has(d, "text/uri-list")
+                    : Has(d, n);
+                if (!present) continue;
+                if (sb.Length > 0) sb.Append('|');
+                sb.Append(n);
+            }
+            return sb.ToString();
+        }
+
+        // The page a picture came from. Browsers put a "SourceURL:" line in their HTML fragment;
+        // when that is missing or not a real address the quote is labelled「拖拽」instead.
+        static string UrlOf(System.Windows.Forms.IDataObject d)
+        {
+            string html = null;
+            try { if (Has(d, DataFormats.Html)) html = d.GetData(DataFormats.Html) as string; }
+            catch { }
+            if (html != null)
+            {
+                int at = html.IndexOf("SourceURL:", StringComparison.OrdinalIgnoreCase);
+                if (at >= 0)
+                {
+                    int nl = html.IndexOf('\n', at);
+                    string line = html.Substring(at + 10, (nl < 0 ? html.Length : nl) - (at + 10));
+                    line = line.Trim().TrimEnd('\r');
+                    if (Capture.LooksLikeUrl(line)) return line;
+                }
+            }
+            try
+            {
+                if (Has(d, "text/uri-list"))
+                {
+                    string uris = d.GetData("text/uri-list") as string;
+                    if (uris != null)
+                    {
+                        string[] one = uris.Split('\n');
+                        for (int i = 0; i < one.Length; i++)
+                        {
+                            string u = one[i].Trim();
+                            if (Capture.LooksLikeUrl(u)) return u;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        static string TextOf(System.Windows.Forms.IDataObject d)
+        {
+            try
+            {
+                if (Has(d, DataFormats.UnicodeText)) return d.GetData(DataFormats.UnicodeText) as string;
+                if (Has(d, DataFormats.Text)) return d.GetData(DataFormats.Text) as string;
+            }
+            catch { }
+            return null;
+        }
+
+        static List<byte[]> ImagesOf(System.Windows.Forms.IDataObject d)
+        {
+            List<byte[]> list = new List<byte[]>();
+            // 1. a real bitmap (Word, WPS, Paint hand one over directly)
+            if (Has(d, DataFormats.Bitmap))
+            {
+                try
+                {
+                    byte[] png = PngOf(d.GetData(DataFormats.Bitmap) as Image);
+                    if (png != null) { list.Add(png); return list; }
+                }
+                catch { }
+            }
+            // 2. real files on disk (a saved picture, or a page that hands over a temp file)
+            if (Has(d, DataFormats.FileDrop))
+            {
+                try
+                {
+                    string[] files = d.GetData(DataFormats.FileDrop) as string[];
+                    if (files != null)
+                    {
+                        for (int i = 0; i < files.Length; i++)
+                        {
+                            if (!IsImageFile(files[i])) continue;
+                            byte[] b = NormalizePng(ReadFileCapped(files[i], MaxImageBytes));
+                            if (b != null) list.Add(b);
+                        }
+                    }
+                }
+                catch { }
+                if (list.Count > 0) return list;
+            }
+            // 3. a virtual file: browsers stream the picture's bytes through FileContents
+            if (Has(d, "FileGroupDescriptorW") || Has(d, "FileGroupDescriptor"))
+            {
+                System.Runtime.InteropServices.ComTypes.IDataObject com =
+                    d as System.Runtime.InteropServices.ComTypes.IDataObject;
+                if (com != null) ReadVirtual(com, list);
+            }
+            return list;
+        }
+
+        static bool IsImageFile(string path)
+        {
+            if (path == null) return false;
+            string ext = Path.GetExtension(path);
+            if (ext == null) return false;
+            ext = ext.ToLowerInvariant();
+            return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp"
+                || ext == ".gif" || ext == ".webp" || ext == ".tif" || ext == ".tiff";
+        }
+
+        static byte[] ReadFileCapped(string path, int maxBytes)
+        {
+            try
+            {
+                FileInfo fi = new FileInfo(path);
+                if (!fi.Exists || fi.Length <= 0 || fi.Length > maxBytes) return null;
+                return File.ReadAllBytes(path);
+            }
+            catch { return null; }
+        }
+
+        static byte[] PngOf(Image img)
+        {
+            if (img == null) return null;
+            try
+            {
+                using (MemoryStream ms = new MemoryStream())
+                {
+                    img.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    return ms.ToArray();
+                }
+            }
+            catch { return null; }
+        }
+
+        // Stored files are named .png, so anything that is not already a PNG is re-encoded.
+        static byte[] NormalizePng(byte[] raw)
+        {
+            if (raw == null || raw.Length < 8) return null;
+            if (raw[0] == 0x89 && raw[1] == 0x50 && raw[2] == 0x4E && raw[3] == 0x47) return raw;
+            try
+            {
+                using (MemoryStream ms = new MemoryStream(raw))
+                using (Image img = Image.FromStream(ms))
+                    return PngOf(img);
+            }
+            catch { return null; }
+        }
+
+        // The BCL already declares FORMATETC/STGMEDIUM, so the COM calls use those types
+        // directly instead of duplicating the layout.
+        [DllImport("ole32.dll")]
+        static extern int ReleaseStgMedium(
+            ref System.Runtime.InteropServices.ComTypes.STGMEDIUM medium);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern uint RegisterClipboardFormatW(string name);
+
+        static System.Runtime.InteropServices.ComTypes.FORMATETC MakeEtc(
+            string format, int index, System.Runtime.InteropServices.ComTypes.TYMED tymed)
+        {
+            System.Runtime.InteropServices.ComTypes.FORMATETC fe =
+                new System.Runtime.InteropServices.ComTypes.FORMATETC();
+            fe.cfFormat = (short)RegisterClipboardFormatW(format);
+            fe.ptd = IntPtr.Zero;
+            fe.dwAspect = System.Runtime.InteropServices.ComTypes.DVASPECT.DVASPECT_CONTENT;
+            fe.lindex = index;
+            fe.tymed = tymed;
+            return fe;
+        }
+
+        static void ReadVirtual(System.Runtime.InteropServices.ComTypes.IDataObject com, List<byte[]> sinks)
+        {
+            int count = 0;
+            System.Runtime.InteropServices.ComTypes.FORMATETC fe = MakeEtc(
+                "FileGroupDescriptorW", -1, System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL);
+            System.Runtime.InteropServices.ComTypes.STGMEDIUM stg =
+                new System.Runtime.InteropServices.ComTypes.STGMEDIUM();
+            // The managed COM wrapper throws instead of returning an HRESULT, so a source that
+            // does not implement FileContents simply lands in the catch.
+            try { com.GetData(ref fe, out stg); }
+            catch { return; }
+            try
+            {
+                if (stg.unionmember != IntPtr.Zero) count = Marshal.ReadInt32(stg.unionmember);
+            }
+            catch { count = 0; }
+            finally { ReleaseStgMedium(ref stg); }
+            if (count <= 0) return;
+            if (count > 32) count = 32;
+            for (int i = 0; i < count; i++)
+            {
+                byte[] b = VirtualBytes(com, i);
+                if (b != null) sinks.Add(b);
+            }
+        }
+
+        static byte[] VirtualBytes(System.Runtime.InteropServices.ComTypes.IDataObject com, int index)
+        {
+            System.Runtime.InteropServices.ComTypes.FORMATETC fe = MakeEtc(
+                "FileContents", index, System.Runtime.InteropServices.ComTypes.TYMED.TYMED_ISTREAM);
+            System.Runtime.InteropServices.ComTypes.STGMEDIUM stg =
+                new System.Runtime.InteropServices.ComTypes.STGMEDIUM();
+            try { com.GetData(ref fe, out stg); }
+            catch { return null; }
+            try
+            {
+                if (stg.unionmember == IntPtr.Zero) return null;
+                object o = Marshal.GetObjectForIUnknown(stg.unionmember);
+                System.Runtime.InteropServices.ComTypes.IStream s =
+                    o as System.Runtime.InteropServices.ComTypes.IStream;
+                if (s == null) return null;
+                return NormalizePng(ReadStream(s, MaxImageBytes));
+            }
+            catch { return null; }
+            finally { ReleaseStgMedium(ref stg); }
+        }
+
+        static byte[] ReadStream(System.Runtime.InteropServices.ComTypes.IStream s, int maxBytes)
+        {
+            byte[] buf = new byte[64 * 1024];
+            MemoryStream ms = new MemoryStream();
+            Stopwatch sw = Stopwatch.StartNew();
+            while (true)
+            {
+                if (sw.ElapsedMilliseconds > ReadBudgetMs) return null;
+                IntPtr got = Marshal.AllocHGlobal(4);
+                int n;
+                try { s.Read(buf, buf.Length, got); n = Marshal.ReadInt32(got); }
+                catch { return null; }
+                finally { Marshal.FreeHGlobal(got); }
+                if (n <= 0) break;
+                ms.Write(buf, 0, n);
+                if (ms.Length > maxBytes) return null;
+            }
+            return ms.Length == 0 ? null : ms.ToArray();
+        }
+    }
     class Drawer : Form
     {
         const int WM_NCHITTEST = 0x0084;
@@ -3714,7 +4094,35 @@ namespace QuoteStack
                 if (h != null) h(this, EventArgs.Empty);
             };
             _list.Reload();
+            HookDrop(this);
+            HookDrop(_list);
         }
+
+        // A drop anywhere on the drawer counts, not just on the rows: the list only covers the
+        // middle of the panel, and asking the user to aim at it would be needless precision.
+        void HookDrop(Control c)
+        {
+            c.AllowDrop = true;
+            c.DragEnter += DropEffect;
+            c.DragOver += DropEffect;
+            c.DragDrop += DropReceived;
+        }
+
+        static void DropEffect(object sender, DragEventArgs e)
+        {
+            e.Effect = DragIn.Supported(e.Data) ? DragDropEffects.Copy : DragDropEffects.None;
+        }
+
+        void DropReceived(object sender, DragEventArgs e)
+        {
+            DragIn.Payload p = null;
+            try { p = DragIn.Read(e.Data); }
+            catch { p = null; }
+            DragIn.Handler h = Dropped;
+            if (h != null) h(p);
+        }
+
+        public event DragIn.Handler Dropped;
 
         public event EventHandler CleanupRequested;
 
