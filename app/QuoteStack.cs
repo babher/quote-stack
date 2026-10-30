@@ -6,8 +6,10 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -111,6 +113,23 @@ namespace QuoteStack
         {
             if (name == null || name.Length == 0) return null;
             return Path.Combine(ImagesDir, name);
+        }
+
+        // Best effort: a picture nobody points at is dead weight, so removal never throws.
+        public static bool DeleteImage(string name)
+        {
+            try
+            {
+                string p = ImagePath(name);
+                if (p == null || !File.Exists(p)) return true;
+                File.Delete(p);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogStartup("image: delete-failed " + ex.GetType().Name);
+                return false;
+            }
         }
 
         // One PNG, written to a temp file and then swapped in: a crash mid-write leaves
@@ -284,8 +303,7 @@ namespace QuoteStack
             {
                 string img = JsonField(line, "image");
                 if (img == null || img.Length == 0) return;
-                string p = ImagePath(img);
-                if (p != null && File.Exists(p)) File.Delete(p);
+                DeleteImage(img);
             }
             catch (Exception ex) { LogStartup("image: delete-failed " + ex.GetType().Name); }
         }
@@ -1405,9 +1423,48 @@ namespace QuoteStack
         {
             if (p == null) { ShowDropFailure("无法读取拖入内容"); return; }
             string text = p.Text == null ? "" : p.Text.Trim();
-            if (p.Images.Count == 0 && text.Length == 0) { ShowDropFailure("拖入内容为空"); return; }
             string url = p.Url == null ? "" : p.Url;
-            string source = url.Length > 0 ? url : "拖拽";
+            // Dragging a picture out of a browser puts the picture's own address into the text
+            // format. That is the source of the quote, not its body, so it moves to url and the
+            // row shows （图片） with the address under the source line like every other record.
+            if (p.Images.Count > 0 && text.Length > 0 && url.Length == 0 && QuoteStack.Capture.LooksLikeUrl(text))
+            {
+                url = text;
+                text = "";
+            }
+            if (p.Images.Count == 0 && text.Length == 0) { ShowDropFailure("拖入内容为空"); return; }
+            // The source line shows the program the drop came from, never a placeholder; the
+            // address (when there is one) gets its own line, so nothing repeats.
+            string source = DropSourceLabel();
+            // A page drag carries markup but no pixels. The one picture it points at is fetched
+            // (the only outbound request this app ever makes): it makes a text+image drag land
+            // as one quote with its picture, which is what the user asked for.
+            string fetch = "-";
+            if (p.Images.Count == 0 && text.Length > 0 && p.Html != null)
+            {
+                byte[] inline = DragIn.FirstInlineImage(p.Html);
+                if (inline != null)
+                {
+                    p.Images.Add(inline);
+                    fetch = "inline";
+                }
+                else
+                {
+                    string src = DragIn.FirstImageUrl(p.Html, url);
+                    if (src == null) fetch = "none";
+                    else
+                    {
+                        Stopwatch fw = Stopwatch.StartNew();
+                        string why;
+                        byte[] png = DragIn.FetchImage(src, 5000, DragIn.MaxImageBytes, out why);
+                        fetch = png != null ? "ok" : why;
+                        Store.LogStartup("dragin: fetch=" + fetch + " imgLen=" + (png == null ? -1 : png.Length)
+                            + " costMs=" + fw.ElapsedMilliseconds);
+                        if (png != null) p.Images.Add(png);
+                    }
+                }
+            }
+
             int saved = 0;
             string failure = null;
             if (p.Images.Count == 0)
@@ -1430,11 +1487,18 @@ namespace QuoteStack
                     string body = i == 0 ? text : "";
                     string err;
                     if (Store.Append(body, source, source, url, name, out err)) saved++;
-                    else if (failure == null) failure = err;
+                    else
+                    {
+                        // The row never landed, so the PNG just written would be unreachable:
+                        // delete it rather than leave an orphan in images\.
+                        if (!Store.DeleteImage(name)) Store.LogStartup("image: orphan-kept " + name);
+                        if (failure == null) failure = err;
+                    }
                 }
             }
-            Store.LogStartup("dragin: fmts=" + p.Formats + " images=" + p.Images.Count
+            Store.LogStartup("dragin: fmts=" + p.Formats + " fetch=" + fetch + " images=" + p.Images.Count
                 + " textLen=" + text.Length + " url=" + (url.Length > 0 ? "ok" : "none")
+                + " urlMoved=" + (p.Text != null && p.Text.Trim().Length > 0 && text.Length == 0 ? "yes" : "no")
                 + " saved=" + saved);
             if (saved == 0)
             {
@@ -1454,6 +1518,21 @@ namespace QuoteStack
             _flash.Stop();
             _flash.Start();
             Invalidate();
+        }
+
+        // A drop carries no process name, so the source is taken from the last foreign foreground
+        // window (the app the user was in just before dragging). Falls back to「拖入」only when
+        // even that is unknown, so no record is ever labelled with a placeholder.
+        string DropSourceLabel()
+        {
+            IntPtr fg = Native.GetForegroundWindow();
+            string proc = (fg != IntPtr.Zero && !IsOwnWindow(fg)) ? Native.ProcessNameOf(fg) : null;
+            if (proc == null || proc.Length == 0)
+            {
+                if (_lastForeign != IntPtr.Zero) proc = Native.ProcessNameOf(_lastForeign);
+            }
+            string label = Records.AppLabel(proc);
+            return (label == null || label.Length == 0 || label == "?") ? "拖入" : label;
         }
 
         void ShowDropFailure(string why)
@@ -2064,7 +2143,7 @@ namespace QuoteStack
             return only;
         }
 
-        static string AppLabel(string proc)
+        public static string AppLabel(string proc)
         {
             if (proc == null || proc.Length == 0) return "?";
             if (FloatBar.IsEdgeProc(proc)) return "Edge";
@@ -3751,6 +3830,9 @@ namespace QuoteStack
             public string Text;
             public string Url;
             public string Formats = "";
+            // Raw markup from the drag, kept in memory only: page drags carry no pixels, just
+            // the <img src> address that a picture can be fetched from.
+            public string Html;
         }
 
         // Decides the cursor ("copy" or "no entry"), so it must be pessimistic: a file drop
@@ -3784,6 +3866,7 @@ namespace QuoteStack
             Payload p = new Payload();
             if (d == null) return p;
             p.Formats = FormatList(d);
+            p.Html = HtmlOf(d);
             p.Url = UrlOf(d);
             p.Text = TextOf(d);
             List<byte[]> images = ImagesOf(d);
@@ -3815,11 +3898,16 @@ namespace QuoteStack
 
         // The page a picture came from. Browsers put a "SourceURL:" line in their HTML fragment;
         // when that is missing or not a real address the quote is labelled「拖拽」instead.
+        static string HtmlOf(System.Windows.Forms.IDataObject d)
+        {
+            try { if (Has(d, DataFormats.Html)) return d.GetData(DataFormats.Html) as string; }
+            catch { }
+            return null;
+        }
+
         static string UrlOf(System.Windows.Forms.IDataObject d)
         {
-            string html = null;
-            try { if (Has(d, DataFormats.Html)) html = d.GetData(DataFormats.Html) as string; }
-            catch { }
+            string html = HtmlOf(d);
             if (html != null)
             {
                 int at = html.IndexOf("SourceURL:", StringComparison.OrdinalIgnoreCase);
@@ -3940,6 +4028,151 @@ namespace QuoteStack
         }
 
         // Stored files are named .png, so anything that is not already a PNG is re-encoded.
+        // ---- pictures that a page drag only points at -------------------------------------
+        // Nothing here runs unless the user drags a text+image selection out of a browser: the
+        // markup carries the picture's address but not its bytes, so that one address is fetched.
+        // Declared in README: a single GET, no cookies, nothing about the app or the quotes is sent.
+
+        public static byte[] FirstInlineImage(string html)
+        {
+            if (html == null) return null;
+            Match m = Regex.Match(html,
+                "src\\s*=\\s*\"data:image/[a-zA-Z0-9.+-]+;base64,([A-Za-z0-9+/=\\s]+)\"",
+                RegexOptions.IgnoreCase);
+            if (!m.Success) return null;
+            try
+            {
+                byte[] raw = Convert.FromBase64String(Regex.Replace(m.Groups[1].Value, "\\s+", ""));
+                return NormalizePng(raw);
+            }
+            catch { return null; }
+        }
+
+        public static string FirstImageUrl(string html, string pageUrl)
+        {
+            if (html == null) return null;
+            Match m = Regex.Match(html,
+                "<img[^>]*?\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+                RegexOptions.IgnoreCase);
+            if (!m.Success) return null;
+            string src = m.Groups[1].Success ? m.Groups[1].Value
+                : m.Groups[2].Success ? m.Groups[2].Value
+                : m.Groups[3].Value;
+            src = (src == null ? "" : src.Trim()).Replace("&amp;", "&");
+            if (src.Length == 0) return null;
+            if (src.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) return null;
+            if (src.StartsWith("//", StringComparison.Ordinal)) src = "https:" + src;
+            Uri abs;
+            if (!Uri.TryCreate(src, UriKind.Absolute, out abs))
+            {
+                Uri baseUri;
+                if (pageUrl == null || !Uri.TryCreate(pageUrl, UriKind.Absolute, out baseUri)) return null;
+                if (!Uri.TryCreate(baseUri, src, out abs)) return null;
+            }
+            if (abs.Scheme != Uri.UriSchemeHttp && abs.Scheme != Uri.UriSchemeHttps) return null;
+            return abs.AbsoluteUri;
+        }
+
+        // Loopback, private, link-local and CGNAT addresses are refused before any request is
+        // made, and the host is resolved first so a DNS name pointing inside is refused too.
+        static bool PublicIp(System.Net.IPAddress ip)
+        {
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            {
+                if (System.Net.IPAddress.IPv6Loopback.Equals(ip)) return false;
+                if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast) return false;
+                return true;
+            }
+            byte[] b = ip.GetAddressBytes();
+            if (b[0] == 0 || b[0] == 10 || b[0] == 127) return false;
+            if (b[0] == 169 && b[1] == 254) return false;
+            if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return false;
+            if (b[0] == 192 && b[1] == 168) return false;
+            if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return false;
+            if (b[0] >= 224) return false;
+            return true;
+        }
+
+        static bool PublicHost(string host)
+        {
+            if (host == null || host.Length == 0) return false;
+            string h = host.ToLowerInvariant();
+            if (h == "localhost" || h.EndsWith(".local", StringComparison.Ordinal)) return false;
+            try
+            {
+                System.Net.IPAddress[] addrs = Dns.GetHostAddresses(host);
+                if (addrs == null || addrs.Length == 0) return false;
+                for (int i = 0; i < addrs.Length; i++) if (!PublicIp(addrs[i])) return false;
+                return true;
+            }
+            catch { return false; }
+        }
+
+        static bool BigEnough(byte[] png)
+        {
+            try
+            {
+                using (MemoryStream ms = new MemoryStream(png))
+                using (Image img = Image.FromStream(ms))
+                    return img.Width >= 16 && img.Height >= 16;
+            }
+            catch { return false; }
+        }
+
+        public static byte[] FetchImage(string url, int timeoutMs, int maxBytes, out string error)
+        {
+            error = "none";
+            Uri uri;
+            if (url == null || !Uri.TryCreate(url, UriKind.Absolute, out uri)) { error = "badurl"; return null; }
+            if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) { error = "blocked"; return null; }
+            if (!PublicHost(uri.Host)) { error = "blocked"; return null; }
+            try
+            {
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(uri);
+                req.Method = "GET";
+                req.Timeout = timeoutMs;
+                req.ReadWriteTimeout = timeoutMs;
+                // A redirect could aim at a private address after the check above.
+                req.AllowAutoRedirect = false;
+                req.UserAgent = "QuoteStack";
+                req.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+                req.CookieContainer = new CookieContainer();
+                using (HttpWebResponse res = (HttpWebResponse)req.GetResponse())
+                {
+                    if (res.StatusCode != HttpStatusCode.OK) { error = "http-" + (int)res.StatusCode; return null; }
+                    if (res.ContentLength > maxBytes) { error = "toobig"; return null; }
+                    using (Stream s = res.GetResponseStream())
+                    {
+                        MemoryStream ms = new MemoryStream();
+                        byte[] buf = new byte[32768];
+                        long total = 0;
+                        int n;
+                        while ((n = s.Read(buf, 0, buf.Length)) > 0)
+                        {
+                            total += n;
+                            if (total > maxBytes) { error = "toobig"; return null; }
+                            ms.Write(buf, 0, n);
+                        }
+                        byte[] png = NormalizePng(ms.ToArray());
+                        if (png == null) { error = "notimage"; return null; }
+                        if (!BigEnough(png)) { error = "tiny"; return null; }
+                        return png;
+                    }
+                }
+            }
+            catch (WebException we)
+            {
+                error = we.Status == WebExceptionStatus.Timeout ? "timeout" : "neterr";
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Store.LogStartup("fetch: " + ex.GetType().Name);
+                error = "neterr";
+                return null;
+            }
+        }
+
         static byte[] NormalizePng(byte[] raw)
         {
             if (raw == null || raw.Length < 8) return null;
