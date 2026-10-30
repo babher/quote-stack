@@ -810,10 +810,12 @@ namespace QuoteStack
         {
             IntPtr hwnd = Native.GetForegroundWindow();
             string proc = Native.ProcessNameOf(hwnd);
-            if (!string.Equals(proc, "msedge.exe", StringComparison.OrdinalIgnoreCase))
+            if (FloatBar.IsTerminal(proc))
             {
-                Store.LogStartup("capture-refused: fg=" + proc + " reason=not-edge");
-                return new CaptureResult { Ok = false, HadSelection = true, Message = "仅支持 Edge" };
+                // Plain Ctrl+C is "interrupt" in a shell, not "copy": refuse instead of
+                // killing whatever the user is running. The drawer opens instead (see WndProc).
+                Store.LogStartup("capture-refused: fg=" + proc + " reason=terminal");
+                return new CaptureResult { Ok = false, HadSelection = true, Message = "终端里不采集（Ctrl+C 会中断命令）" };
             }
 
             string title = Native.TitleOf(hwnd);
@@ -846,7 +848,7 @@ namespace QuoteStack
             // checked again immediately before any key is injected (T3 constraint:
             // never type into an unverified foreground window).
             string procNow = Native.ProcessNameOf(Native.GetForegroundWindow());
-            if (!string.Equals(procNow, "msedge.exe", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(procNow, proc, StringComparison.OrdinalIgnoreCase))
             {
                 Store.LogStartup("capture-refused: target changed during wait, fg=" + procNow);
                 Native.ClipboardRestore(backup);
@@ -879,7 +881,7 @@ namespace QuoteStack
             int sentL = 0;
             int urlRawLen = -1;
             string urlStep = "skip";
-            if (text != null && text.Trim().Length > 0)
+            if (text != null && text.Trim().Length > 0 && FloatBar.IsEdgeProc(proc))
             {
                 urlStep = "unchanged";
                 // Two attempts: Ctrl+L focuses the address bar in Chromium, Alt+D is the
@@ -1207,18 +1209,47 @@ namespace QuoteStack
                 //   anything else   -> no way to tell, so insert into that window
                 bool drawerUp = _drawer != null && !_drawer.IsDisposed && _drawer.Visible;
                 if (drawerUp && _drawer.ContainsFocus) { PerformInsert(); return; }
-                if (IsEdgeForeground()) { StartCapture(); return; }
-                if (drawerUp) { PerformInsert(); return; }
+                // Any program can be a capture source now (rule m03988). Terminals are the one
+                // exception: Ctrl+C there is an interrupt, so the drawer opens instead of a probe.
+                if (!IsTerminalForeground()) { StartCapture(); return; }
                 OpenOrFocusDrawer();
                 return;
             }
             base.WndProc(ref m);
         }
 
+        // Programs where a synthetic Ctrl+C is "interrupt", not "copy". Sending the chord
+        // there would kill a running command, so those are refused and the drawer opens.
+        // The list errs towards refusing: a wrong entry only costs a convenience, a missing
+        // one can abort a build or a long command.
+        static readonly string[] TerminalProcs = new string[]
+        {
+            "cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe", "wt.exe",
+            "WindowsTerminal.exe", "mintty.exe", "bash.exe", "wsl.exe", "ubuntu.exe",
+            "Code.exe"
+        };
+
+        public static bool IsTerminal(string proc)
+        {
+            if (proc == null) return false;
+            for (int i = 0; i < TerminalProcs.Length; i++)
+                if (string.Equals(proc, TerminalProcs[i], StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        static bool IsTerminalForeground()
+        {
+            return IsTerminal(Native.ProcessNameOf(Native.GetForegroundWindow()));
+        }
+
+        public static bool IsEdgeProc(string proc)
+        {
+            return string.Equals(proc, "msedge.exe", StringComparison.OrdinalIgnoreCase);
+        }
+
         static bool IsEdgeForeground()
         {
-            return string.Equals(Native.ProcessNameOf(Native.GetForegroundWindow()),
-                "msedge.exe", StringComparison.OrdinalIgnoreCase);
+            return IsEdgeProc(Native.ProcessNameOf(Native.GetForegroundWindow()));
         }
 
         // Launch refusals are logged so a failed start is diagnosable, but the log deliberately
@@ -1812,8 +1843,15 @@ namespace QuoteStack
         static string AppLabel(string proc)
         {
             if (proc == null || proc.Length == 0) return "?";
-            if (string.Equals(proc, "msedge.exe", StringComparison.OrdinalIgnoreCase)) return "Edge";
+            if (FloatBar.IsEdgeProc(proc)) return "Edge";
             if (string.Equals(proc, "WINWORD.EXE", StringComparison.OrdinalIgnoreCase)) return "Word";
+            if (string.Equals(proc, "wps.exe", StringComparison.OrdinalIgnoreCase)) return "WPS";
+            if (string.Equals(proc, "Weixin.exe", StringComparison.OrdinalIgnoreCase)) return "微信";
+            if (string.Equals(proc, "WeChat.exe", StringComparison.OrdinalIgnoreCase)) return "微信";
+            if (string.Equals(proc, "notepad.exe", StringComparison.OrdinalIgnoreCase)) return "记事本";
+            if (string.Equals(proc, "Acrobat.exe", StringComparison.OrdinalIgnoreCase)) return "Acrobat";
+            if (string.Equals(proc, "SumatraPDF.exe", StringComparison.OrdinalIgnoreCase)) return "SumatraPDF";
+            if (proc.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) return proc.Substring(0, proc.Length - 4);
             return proc;
         }
 
