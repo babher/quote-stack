@@ -1278,12 +1278,20 @@ namespace QuoteStack
         {
             if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HOTKEY_ID)
             {
-                // One key, decided by what the user is doing (rule m01388):
-                //   drawer focused  -> insert the ticked quotes into the last foreign window
-                //   Edge foreground -> a selection means a quote, no selection means insert
-                //   anything else   -> no way to tell, so insert into that window
+                // One key, decided by what the user is doing (rules m01388, m03988, m04191):
+                //   drawer open + Edge foreground -> a selection there is a new quote
+                //   drawer open + anywhere else   -> insert (probing here would swallow the
+                //                                    target's own text as a quote and the
+                //                                    insert would never happen)
+                //   drawer closed                 -> probe for a selection; no selection
+                //                                    opens the drawer for inserting
                 bool drawerUp = _drawer != null && !_drawer.IsDisposed && _drawer.Visible;
-                if (drawerUp && _drawer.ContainsFocus) { PerformInsert(); return; }
+                if (drawerUp)
+                {
+                    if (!IsEdgeForeground()) { PerformInsert(); return; }
+                    StartCapture();
+                    return;
+                }
                 // Any program can be a capture source now (rule m03988). Terminals are the one
                 // exception: Ctrl+C there is an interrupt, so the drawer opens instead of a probe.
                 if (!IsTerminalForeground()) { StartCapture(); return; }
@@ -1672,7 +1680,10 @@ namespace QuoteStack
             }
             string text = Records.Compose(chosen, DateTimeOffset.Now);
             // Where the caret actually is now, not where it was when the drawer opened.
-            IntPtr target = _lastForeign;
+            // The window the user pressed the key in wins: the 200ms watcher can still be one
+            // tick behind right after a click, and a stale target pastes into the wrong app.
+            IntPtr fgNow = Native.GetForegroundWindow();
+            IntPtr target = (fgNow != IntPtr.Zero && !IsOwnWindow(fgNow)) ? fgNow : _lastForeign;
             if (target == IntPtr.Zero) target = _drawer.TargetWindow;
             // Hidden rather than closed: it has to give the target back its focus for the
             // paste, then returns so the next quote can be inserted in the same pass.
@@ -3969,23 +3980,48 @@ namespace QuoteStack
 
         public const int MaxImageBytes = 20 * 1024 * 1024;
 
+        // Reads the clipboard picture as PNG bytes.
+        //
+        // System.Windows.Forms.Clipboard does NOT throw on a non-STA thread — it silently
+        // reports "no image" (measured 2026-10-30: main-STA=True, MTA-thread=False,
+        // pool-thread=False, STA-thread=True with the same clipboard contents). The capture
+        // path runs on a ThreadPool worker, so an image copied in the browser was never seen
+        // and every picture capture ended as "no selection" — the bug reported as
+        // "引用不了图片". Reading on a short dedicated STA thread keeps the one tested OLE
+        // path working from any thread.
         public static byte[] ReadClipImagePng(int maxBytes)
         {
-            try
+            byte[] result = null;
+            Thread t = new Thread(delegate()
             {
-                if (!Clipboard.ContainsImage()) return null;
-                using (Image img = Clipboard.GetImage())
+                try { result = ReadClipImagePngSta(maxBytes); }
+                catch (Exception ex)
                 {
-                    if (img == null) return null;
-                    using (var ms = new MemoryStream())
-                    {
-                        img.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
-                        if (ms.Length > maxBytes) return null;
-                        return ms.ToArray();
-                    }
+                    // Logging itself can fail (read-only profile); an unhandled exception on a
+                    // background thread would take the whole process down, so it is confined.
+                    try { Store.LogStartup("image: read-failed " + ex.GetType().Name); } catch { }
+                }
+            });
+            t.SetApartmentState(ApartmentState.STA);
+            t.IsBackground = true;
+            t.Start();
+            if (!t.Join(2000)) { try { Store.LogStartup("image: read-timeout"); } catch { } }
+            return result;
+        }
+
+        static byte[] ReadClipImagePngSta(int maxBytes)
+        {
+            if (!Clipboard.ContainsImage()) return null;
+            using (Image img = Clipboard.GetImage())
+            {
+                if (img == null) return null;
+                using (var ms = new MemoryStream())
+                {
+                    img.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    if (ms.Length > maxBytes) return null;
+                    return ms.ToArray();
                 }
             }
-            catch { return null; }
         }
 
         // Replaces the clipboard with one picture. OLE takes the clipboard lock itself, so
