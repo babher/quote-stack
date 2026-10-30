@@ -100,7 +100,42 @@ namespace QuoteStack
         // records the oldest ones fall off the front.
         public const int MaxRecords = 500;
 
-        public static bool Append(string text, string source, string title, string url, out string error)
+        // Captured images live next to the stack, one PNG per record, named after the
+        // record id so a record and its image can never drift apart.
+        public static string ImagesDir
+        {
+            get { return Path.Combine(DirPath, "images"); }
+        }
+
+        public static string ImagePath(string name)
+        {
+            if (name == null || name.Length == 0) return null;
+            return Path.Combine(ImagesDir, name);
+        }
+
+        // One PNG, written to a temp file and then swapped in: a crash mid-write leaves
+        // the temp file (removed at startup) and never a half image the list would show.
+        public static bool SaveImagePng(byte[] png, string name, out string error)
+        {
+            error = null;
+            if (png == null || png.Length == 0) { error = "empty"; return false; }
+            try
+            {
+                Directory.CreateDirectory(ImagesDir);
+                string dst = ImagePath(name);
+                string tmp = dst + ".tmp";
+                File.WriteAllBytes(tmp, png);
+                ReplaceFileAtomic(tmp, dst);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.GetType().Name;
+                return false;
+            }
+        }
+
+        public static bool Append(string text, string source, string title, string url, string image, out string error)
         {
             error = null;
             var sb = new StringBuilder(256 + text.Length);
@@ -111,6 +146,8 @@ namespace QuoteStack
             sb.Append("\"source\":\"").Append(Escape(source)).Append("\",");
             sb.Append("\"title\":\"").Append(Escape(title)).Append("\",");
             sb.Append("\"url\":\"").Append(Escape(url == null ? "" : url)).Append("\",");
+            if (image != null && image.Length > 0)
+                sb.Append("\"image\":\"").Append(Escape(image)).Append("\",");
             sb.Append("\"text\":\"").Append(Escape(text)).Append("\"}");
             string line = sb.ToString();
 
@@ -238,6 +275,21 @@ namespace QuoteStack
         // which is what the old code deleted by. The rewrite goes to a temp file in the
         // same directory and then MoveFileExW replaces it, so an interrupted delete cannot
         // leave a half-written stack (red line 9: no non-atomic writes).
+        // A record that is removed must not leave its picture behind: the PNG is named
+        // after the record, so the line alone is enough to find it. Best effort — a picture
+        // that cannot be deleted is not a reason to fail the delete.
+        static void DeleteImageOf(string line)
+        {
+            try
+            {
+                string img = JsonField(line, "image");
+                if (img == null || img.Length == 0) return;
+                string p = ImagePath(img);
+                if (p != null && File.Exists(p)) File.Delete(p);
+            }
+            catch (Exception ex) { LogStartup("image: delete-failed " + ex.GetType().Name); }
+        }
+
         public static bool DeleteByKey(HashSet<string> drop, out int removed, out string error)
         {
             removed = 0;
@@ -262,7 +314,7 @@ namespace QuoteStack
                             if (text == null) continue;
                             string id = JsonField(line, "id");
                             string key = (id != null && id.Length > 0) ? id : ("h:" + Hash12(text));
-                            if (drop.Contains(key)) { removed++; continue; }
+                            if (drop.Contains(key)) { removed++; DeleteImageOf(line); continue; }
                             keep.Add(line);
                         }
                     }
@@ -323,6 +375,7 @@ namespace QuoteStack
                         if (text == null) continue;
                         string id = JsonField(lines[i], "id");
                         gone.Add((id != null && id.Length > 0) ? id : ("h:" + Hash12(text)));
+                        DeleteImageOf(lines[i]);
                     }
                     List<string> keep = lines.GetRange(cut, lines.Count - cut);
                     tmp = FilePath + ".tmp";
@@ -477,7 +530,7 @@ namespace QuoteStack
         public static int SelfTest()
         {
             string err;
-            bool ok = Append("SELFTEST-RECORD 这条记录由 --selftest 写入，用于验证存储路径与追加写入。", "selftest", "selftest", "", out err);
+            bool ok = Append("SELFTEST-RECORD 这条记录由 --selftest 写入，用于验证存储路径与追加写入。", "selftest", "selftest", "", null, out err);
             return ok ? 0 : 1;
         }
 
@@ -820,7 +873,7 @@ namespace QuoteStack
 
             string title = Native.TitleOf(hwnd);
 
-            string backup;
+            Native.ClipBackup backup;
             int formats;
             uint seq0;
             bool hadSnapshot = Native.ClipboardSnapshot(out backup, out formats, out seq0);
@@ -873,6 +926,26 @@ namespace QuoteStack
 
             string text = null;
             if (seq != seq0) text = Native.ReadClipText(6);
+
+            // A picture copied from a page carries no text; a mixed selection carries both.
+            // The PNG is written before the record so a record never points at a file that
+            // was not saved. An oversized image is dropped, not truncated.
+            byte[] imgPng = null;
+            string imgName = null;
+            if (seq != seq0)
+            {
+                imgPng = Native.ReadClipImagePng(Native.MaxImageBytes);
+                if (imgPng != null)
+                {
+                    imgName = Guid.NewGuid().ToString("N").Substring(0, 12) + ".png";
+                    string imgErr;
+                    if (!Store.SaveImagePng(imgPng, imgName, out imgErr))
+                    {
+                        Store.LogStartup("image: save-failed " + imgErr);
+                        imgName = null;
+                    }
+                }
+            }
 
             // The address bar is read only after the selection has been copied: Ctrl+L moves
             // focus to the URL bar, so anything sent afterwards would copy the URL instead of
@@ -928,22 +1001,24 @@ namespace QuoteStack
                 + " via=" + via
                 + " seq=" + seq0 + "->" + seq
                 + " waited=" + waited
-                + " backupLen=" + (backup == null ? -1 : backup.Length)
+                + " backupLen=" + (backup == null || backup.Text == null ? -1 : backup.Text.Length)
                 + " urlStep=" + urlStep
                 + " urlRawLen=" + urlRawLen
                 + " urlLen=" + (url == null ? -1 : url.Length)
+                + " imgLen=" + (imgPng == null ? -1 : imgPng.Length)
                 + " textLen=" + (text == null ? -1 : text.Length));
 
             // No clipboard change means no selection: the same hotkey that stores a quote
             // must then open the drawer and insert at the caret instead (user rule m01388).
-            if (text == null || text.Trim().Length == 0)
+            bool hasText = text != null && text.Trim().Length > 0;
+            if (!hasText && imgName == null)
                 return new CaptureResult { Ok = false, HadSelection = false, Message = null };
 
             string err;
-            if (!Store.Append(text, proc, title, url, out err))
+            if (!Store.Append(hasText ? text : "", proc, title, url, imgName, out err))
                 return new CaptureResult { Ok = false, HadSelection = true, Message = "写入失败" };
 
-            return new CaptureResult { Ok = true, HadSelection = true, Preview = text };
+            return new CaptureResult { Ok = true, HadSelection = true, Preview = hasText ? text : "（图片）" };
         }
     }
 
@@ -1605,7 +1680,13 @@ namespace QuoteStack
 
             string message;
             string log;
-            bool ok = Deliver.Run(target, text, out message, out log);
+            bool anyImage = false;
+            foreach (Record r in chosen) if (r.HasImage) anyImage = true;
+            // Text-only selections still paste as one composed block (blank line between
+            // quotes); a selection containing pictures has to be pasted record by record.
+            bool ok = anyImage
+                ? Deliver.RunItems(chosen, target, out message, out log)
+                : Deliver.Run(target, text, out message, out log);
             Store.LogStartup(log); // counts and outcomes only, never the text
 
             if (ok)
@@ -1620,7 +1701,7 @@ namespace QuoteStack
                 }
                 Store.LogStartup("deliver: marked-used=" + marked + "/" + chosen.Count);
                 _count = Math.Max(0, Store.Count());
-                _preview = chosen[0].Text;
+                _preview = chosen[0].DisplayText;
                 _status = "已插入 " + chosen.Count + " 条";
                 _flashKind = KindOk;
                 // Reload re-reads the stack, which both clears the ticks (a second insert
@@ -1766,6 +1847,9 @@ namespace QuoteStack
         public string Text;
         public string Source;
         public string Url;
+        // File name inside %APPDATA%\quote-stack\images. Null for plain text quotes; a
+        // record may hold text AND an image (a mixed selection copied from a page).
+        public string Image;
         public DateTimeOffset When;
         // Per-record identity written at capture time. v1 rows have none; for those the
         // identity falls back to "h:" + the text hash, which is how v1 deleted them.
@@ -1773,6 +1857,21 @@ namespace QuoteStack
         // True once this quote has been inserted at least once; drives the marker in
         // the list and the cleanup panel.
         public bool Used;
+
+        public bool HasImage
+        {
+            get { return Image != null && Image.Length > 0; }
+        }
+
+        // What the list and the floating bar show for this record.
+        public string DisplayText
+        {
+            get
+            {
+                if (Text != null && Text.Trim().Length > 0) return Text;
+                return "（图片）";
+            }
+        }
 
         public string Key
         {
@@ -1809,12 +1908,15 @@ namespace QuoteStack
                 for (int i = lines.Count - 1; i >= 0 && list.Count < max; i--)
                 {
                     string text = Store.JsonField(lines[i], "text");
-                    if (text == null || text.Trim().Length == 0) continue;
+                    string image = Store.JsonField(lines[i], "image");
+                    bool hasImage = image != null && image.Length > 0;
+                    if ((text == null || text.Trim().Length == 0) && !hasImage) continue;
                     Record r = new Record();
                     r.Id = Store.JsonField(lines[i], "id");
                     r.Text = text;
                     r.Source = AppLabel(Store.JsonField(lines[i], "source"));
                     r.Url = Store.JsonField(lines[i], "url");
+                    r.Image = hasImage ? image : null;
                     r.When = ParseWhen(Store.JsonField(lines[i], "ts"));
                     // New journals key on the record id, v1 journals keyed on the text hash;
                     // both are honoured so an upgrade never loses the 已引用 markers.
@@ -1913,7 +2015,7 @@ namespace QuoteStack
             message = null;
             Stopwatch sw = Stopwatch.StartNew();
 
-            string backup;
+            Native.ClipBackup backup;
             int formats;
             uint seq;
             // Bug fix: the return value used to be ignored. When the clipboard could not
@@ -1926,10 +2028,9 @@ namespace QuoteStack
                 log = "deliver: abort snapshot-failed seq=" + seq + " textLen=" + text.Length;
                 return false;
             }
-            // A non-text clipboard (an image, files) cannot be put back: only the
-            // CF_UNICODETEXT form is backed up. In that case leaving our composed text on
-            // the clipboard is strictly better than emptying it.
-            bool canRestore = backup != null || formats == 0;
+            // Text and images are backed up; anything else (files, rich text) is not, and
+            // in that case leaving our content on the clipboard is better than emptying it.
+            bool canRestore = (backup != null && (backup.Text != null || backup.Image != null)) || formats == 0;
             if (!Native.SetClipboardText(text))
             {
                 message = "剪贴板写入失败";
@@ -1991,6 +2092,87 @@ namespace QuoteStack
                 + " textLen=" + text.Length + " restored=" + canRestore
                 + " costMs=" + sw.ElapsedMilliseconds;
             return true;
+        }
+
+        // Mixed selections: one paste per record (text first, then its picture), because a
+        // target application takes either text or an image in a single paste, not both. The
+        // clipboard is backed up once and restored once around the whole pass.
+        public static bool RunItems(List<Record> items, IntPtr target, out string message, out string log)
+        {
+            message = null;
+            log = null;
+            Stopwatch sw = Stopwatch.StartNew();
+            Native.ClipBackup backup;
+            int formats;
+            uint seq;
+            if (!Native.ClipboardSnapshot(out backup, out formats, out seq))
+            {
+                message = "剪贴板被占用，未发送按键";
+                log = "deliver-items: abort snapshot-failed seq=" + seq;
+                return false;
+            }
+            bool canRestore = (backup != null && (backup.Text != null || backup.Image != null)) || formats == 0;
+
+            // Same modifier race as the text path: the hotkey fires on key-down.
+            long waitedMods = Native.WaitModifiersReleased(1200);
+            int released = 0;
+            if (!Native.HeldModifiers().Equals("-")) { released = Native.ForceReleaseModifiers(); Thread.Sleep(40); }
+
+            int steps = 0;
+            int pasted = 0;
+            string failed = null;
+            string fgLast = "-";
+            foreach (Record r in items)
+            {
+                if (r.Text != null && r.Text.Trim().Length > 0)
+                {
+                    steps++;
+                    if (!Native.SetClipboardText(r.Text)) { failed = "clipboard-set-failed"; break; }
+                    if (!PasteOnce(target, ref fgLast)) { failed = "send-failed"; break; }
+                    pasted++;
+                }
+                if (r.HasImage)
+                {
+                    byte[] png = null;
+                    try
+                    {
+                        string ip = Store.ImagePath(r.Image);
+                        if (ip != null && File.Exists(ip)) png = File.ReadAllBytes(ip);
+                    }
+                    catch (Exception ex) { Store.LogStartup("image: read-failed " + ex.GetType().Name); }
+                    steps++;
+                    if (png == null) { failed = "image-missing"; break; }
+                    if (!Native.SetClipboardImagePng(png)) { failed = "image-set-failed"; break; }
+                    if (!PasteOnce(target, ref fgLast)) { failed = "send-failed"; break; }
+                    pasted++;
+                }
+            }
+            if (canRestore) Native.ClipboardRestore(backup);
+
+            string tail = " steps=" + steps + " pasted=" + pasted
+                + " target=" + Native.ProcessNameOf(target) + " fgAfterSend=" + fgLast
+                + " waitedMods=" + waitedMods + " released=" + released
+                + " restored=" + canRestore + " costMs=" + sw.ElapsedMilliseconds;
+            if (failed != null)
+            {
+                message = failed == "image-missing" ? "图片文件缺失" : "粘贴失败（按键未送达）";
+                log = "deliver-items: failed=" + failed + tail;
+                return false;
+            }
+            log = "deliver-items: ok" + tail;
+            return true;
+        }
+
+        // One Ctrl+V into the target. False means SendInput inserted fewer than the four
+        // events (the chord never reached a window) or the target never came forward.
+        static bool PasteOnce(IntPtr target, ref string fgLast)
+        {
+            if (!Native.EnsureForeground(target, 1500)) return false;
+            Thread.Sleep(180);
+            int sent = Native.SendCtrlV(25);
+            Thread.Sleep(400);
+            fgLast = Native.ProcessNameOf(Native.GetForegroundWindow());
+            return sent == 4;
         }
     }
 
@@ -2252,7 +2434,7 @@ namespace QuoteStack
         float RowBodyH(Graphics g, int i)
         {
             if (!_open[i]) return BodyLineH * 2;
-            SizeF sz = g.MeasureString(_items[i].Text.Trim(), _fBody, new SizeF(BodyWidth, 0f));
+            SizeF sz = g.MeasureString(_items[i].DisplayText.Trim(), _fBody, new SizeF(BodyWidth, 0f));
             return Math.Max(BodyLineH * 2, sz.Height);
         }
 
@@ -2428,8 +2610,8 @@ namespace QuoteStack
                 }
 
                 string body = _open[i]
-                    ? _items[i].Text.Trim()
-                    : TwoLines(g, _items[i].Text.Trim(), _fBody, BodyWidth);
+                    ? _items[i].DisplayText.Trim()
+                    : TwoLines(g, _items[i].DisplayText.Trim(), _fBody, BodyWidth);
                 using (var b = new SolidBrush(Color.FromArgb(232, 232, 238)))
                     g.DrawString(body, _fBody, b, new RectangleF(PadLeft, y + BodyTop, BodyWidth, _bodyH[i]));
 
@@ -2767,7 +2949,7 @@ namespace QuoteStack
             foreach (Record r in _items)
             {
                 CheckBox cb = new CheckBox();
-                string body = r.Text.Replace("\r", " ").Replace("\n", " ").Trim();
+                string body = r.DisplayText.Replace("\r", " ").Replace("\n", " ").Trim();
                 if (body.Length > 34) body = body.Substring(0, 34) + "…";
                 cb.Text = Records.Stamp(r, DateTimeOffset.Now) + "  ·  " + Records.SrcLabel(r) + "\n" + body;
                 cb.Tag = r;
@@ -3777,9 +3959,56 @@ namespace QuoteStack
             return false;
         }
 
-        public static bool ClipboardSnapshot(out string text, out int formats, out uint seq)
+        // What the clipboard held before we touched it. Text alone cannot restore an
+        // image, so the backup carries PNG bytes as well; a null both means "leave ours".
+        public class ClipBackup
         {
-            text = null;
+            public string Text;
+            public byte[] Image;
+        }
+
+        public const int MaxImageBytes = 20 * 1024 * 1024;
+
+        public static byte[] ReadClipImagePng(int maxBytes)
+        {
+            try
+            {
+                if (!Clipboard.ContainsImage()) return null;
+                using (Image img = Clipboard.GetImage())
+                {
+                    if (img == null) return null;
+                    using (var ms = new MemoryStream())
+                    {
+                        img.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                        if (ms.Length > maxBytes) return null;
+                        return ms.ToArray();
+                    }
+                }
+            }
+            catch { return null; }
+        }
+
+        // Replaces the clipboard with one picture. OLE takes the clipboard lock itself, so
+        // this must NOT run while our own OpenClip() handle is held: doing that made every
+        // call fail (found by a headless round-trip test, 2026-10-30).
+        public static bool SetClipboardImagePng(byte[] png)
+        {
+            if (png == null || png.Length == 0) return false;
+            try
+            {
+                using (var ms = new MemoryStream(png))
+                using (Image img = Image.FromStream(ms))
+                {
+                    Clipboard.SetImage(img);
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static bool ClipboardSnapshot(out ClipBackup backup, out int formats, out uint seq)
+        {
+            backup = new ClipBackup();
             formats = 0;
             seq = GetClipboardSequenceNumber();
             if (!OpenClip(5)) return false;
@@ -3796,14 +4025,18 @@ namespace QuoteStack
                         IntPtr p = GlobalLock(h);
                         if (p != IntPtr.Zero)
                         {
-                            try { text = Marshal.PtrToStringUni(p); }
+                            try { backup.Text = Marshal.PtrToStringUni(p); }
                             finally { GlobalUnlock(h); }
                         }
                     }
                 }
-                return true;
             }
             finally { CloseClipboard(); }
+
+            // The picture is read through the managed API only after our own handle is
+            // released: holding the clipboard open while OLE asks for it would deadlock.
+            backup.Image = ReadClipImagePng(MaxImageBytes);
+            return true;
         }
 
         public static string ReadClipText(int tries)
@@ -3839,13 +4072,15 @@ namespace QuoteStack
             return null;
         }
 
-        public static void ClipboardRestore(string backup)
+        public static void ClipboardRestore(ClipBackup backup)
         {
+            if (backup == null) return;
+            if (backup.Image != null) { SetClipboardImagePng(backup.Image); return; }
             if (!OpenClip(5)) return;
             try
             {
                 EmptyClipboard();
-                if (backup != null && backup.Length > 0) SetTextInternal(backup);
+                if (backup.Text != null && backup.Text.Length > 0) SetTextInternal(backup.Text);
             }
             finally { CloseClipboard(); }
         }
