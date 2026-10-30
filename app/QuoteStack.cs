@@ -846,6 +846,11 @@ namespace QuoteStack
     {
         const int PollMs = 900;
 
+        // Sequence number of the clipboard as this program last left it. A picture copied with
+        // the browser's context menu sits on the clipboard before the hotkey is pressed, so the
+        // capture path accepts it — but only once, never again on a second press of the same key.
+        static uint LastSeenClipSeq;
+
         // A URL is stored only when the clipboard text really is one: scheme, no
         // whitespace, no newline, sane length. Anything else is treated as "no URL"
         // instead of writing the address bar's placeholder or a stray fragment.
@@ -884,6 +889,21 @@ namespace QuoteStack
             }
 
             Stopwatch sw = Stopwatch.StartNew();
+
+            // A picture is normally copied with the browser's right-click menu ("复制图片"),
+            // which puts it on the clipboard BEFORE the hotkey is pressed — Ctrl+C in the page
+            // then copies nothing, so waiting for a clipboard change would never see it.
+            // Reading one picture at the start of every capture is cheap (~40ms) and only
+            // accepted when the clipboard changed since the previous capture, so the same
+            // picture cannot be stored twice by pressing the key again.
+            byte[] pendingImg = null;
+            string pendingWhy = "skip";
+            if (seq0 != LastSeenClipSeq)
+            {
+                pendingImg = Native.ReadClipImagePng(Native.MaxImageBytes);
+                pendingWhy = pendingImg == null ? "none" : "ok";
+            }
+
             string heldBefore = Native.HeldModifiers();
             long waitedMods = Native.WaitModifiersReleased(1200);
             string heldAfterWait = Native.HeldModifiers();
@@ -932,18 +952,29 @@ namespace QuoteStack
             // was not saved. An oversized image is dropped, not truncated.
             byte[] imgPng = null;
             string imgName = null;
+            string imgWhy = "skip";
             if (seq != seq0)
             {
                 imgPng = Native.ReadClipImagePng(Native.MaxImageBytes);
-                if (imgPng != null)
+                imgWhy = imgPng == null ? "none" : "ok";
+            }
+            else if (pendingImg != null)
+            {
+                // No selection in the page, but a picture landed on the clipboard just before
+                // the hotkey was pressed (right-click → 复制图片). That picture is the quote the
+                // user meant, so store it instead of opening the drawer (rule m04274).
+                imgPng = pendingImg;
+                imgWhy = "from-clipboard";
+                via = "clipboard-image";
+            }
+            if (imgPng != null)
+            {
+                imgName = Guid.NewGuid().ToString("N").Substring(0, 12) + ".png";
+                string imgErr;
+                if (!Store.SaveImagePng(imgPng, imgName, out imgErr))
                 {
-                    imgName = Guid.NewGuid().ToString("N").Substring(0, 12) + ".png";
-                    string imgErr;
-                    if (!Store.SaveImagePng(imgPng, imgName, out imgErr))
-                    {
-                        Store.LogStartup("image: save-failed " + imgErr);
-                        imgName = null;
-                    }
+                    Store.LogStartup("image: save-failed " + imgErr);
+                    imgName = null;
                 }
             }
 
@@ -985,8 +1016,13 @@ namespace QuoteStack
             }
 
             Native.ClipboardRestore(backup);
-
-            // Counts and integrity labels only: no captured text, no page title (red line 8).
+            // Remembered so the same picture is not stored twice: the restore puts the original
+            // clipboard back, so its sequence number is the one to compare against next time.
+            LastSeenClipSeq = Native.Seq();
+            // A missing picture has two very different causes: the page copied nothing (no
+            // selection) or it copied something that is not a bitmap (a file, a link, HTML).
+            // Format names — never their contents — say which one it was.
+            string fmts = (imgPng == null && (seq != seq0 || pendingWhy == "none")) ? Native.ClipFormatNames(8) : "-";
             // This line exists because "clipboard unchanged" has two very different causes:
             // injection swallowed by UIPI, or injection landing but copying nothing.
             Store.LogStartup("capture: fg=" + proc
@@ -1006,6 +1042,9 @@ namespace QuoteStack
                 + " urlRawLen=" + urlRawLen
                 + " urlLen=" + (url == null ? -1 : url.Length)
                 + " imgLen=" + (imgPng == null ? -1 : imgPng.Length)
+                + " imgWhy=" + imgWhy
+                + " imgPre=" + pendingWhy
+                + " clipFmts=" + fmts
                 + " textLen=" + (text == null ? -1 : text.Length));
 
             // No clipboard change means no selection: the same hotkey that stores a quote
@@ -3816,6 +3855,9 @@ namespace QuoteStack
         [DllImport("user32.dll")]
         static extern int EnumClipboardFormats(uint format);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern int GetClipboardFormatName(uint format, StringBuilder lpszFormatName, int cchMaxCount);
+
         [DllImport("kernel32.dll", SetLastError = true)]
         static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
 
@@ -3979,6 +4021,53 @@ namespace QuoteStack
         }
 
         public const int MaxImageBytes = 20 * 1024 * 1024;
+
+        // Names of the formats currently on the clipboard, at most `max` of them. Diagnostics
+        // only: a name such as "Bitmap"/"DIB"/"HTML Format" says whether the page copied a
+        // picture at all, and nothing but the names is read (red line 8: no contents logged).
+        public static string ClipFormatNames(int max)
+        {
+            if (!OpenClip(3)) return "locked";
+            try
+            {
+                StringBuilder sb = new StringBuilder();
+                int n = 0;
+                uint f = 0;
+                while (n < max)
+                {
+                    int next = EnumClipboardFormats(f);
+                    if (next == 0) break;
+                    f = (uint)next;
+                    if (n > 0) sb.Append(',');
+                    sb.Append(FormatName(f));
+                    n++;
+                }
+                return n == 0 ? "empty" : sb.ToString();
+            }
+            catch { return "err"; }
+            finally { CloseClipboard(); }
+        }
+
+        static string FormatName(uint f)
+        {
+            switch (f)
+            {
+                case 1: return "Text";
+                case 2: return "Bitmap";
+                case 3: return "MetafilePict";
+                case 8: return "DIB";
+                case 13: return "UnicodeText";
+                case 15: return "HDROP";
+                case 17: return "DIBV5";
+            }
+            if (f >= 0xC000)
+            {
+                StringBuilder name = new StringBuilder(160);
+                int len = GetClipboardFormatName(f, name, 160);
+                if (len > 0) return name.ToString(0, Math.Min(len, 40));
+            }
+            return "f" + f;
+        }
 
         // Reads the clipboard picture as PNG bytes.
         //
