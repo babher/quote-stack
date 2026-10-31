@@ -41,6 +41,15 @@ namespace QuoteStack
             p.CloseFigure();
             return p;
         }
+        // 用窗口 Region 把四角挖圆：不依赖 DWM，任何 Win10/11 都生效（边缘无抗锯齿）。
+        internal static void RoundRegion(Form f, float radius)
+        {
+            if (f == null || f.IsDisposed || f.Width <= 0 || f.Height <= 0) return;
+            Region old = f.Region;
+            f.Region = new Region(RoundPath(new RectangleF(0f, 0f, f.Width, f.Height), radius));
+            if (old != null) old.Dispose();
+        }
+
         internal static GraphicsPath RoundPath(RectangleF r, float radius)
         {
             var p = new GraphicsPath();
@@ -1216,6 +1225,18 @@ namespace QuoteStack
 
     class FloatBar : Form
     {
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Theme.RoundRegion(this, 14f);
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            Theme.RoundRegion(this, 14f);
+        }
+
         const int HOTKEY_ID = 9001;
         const uint MOD_ALT = 0x0001;
         const uint VK_Q = 0x51;
@@ -4529,7 +4550,7 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
-            Native.RoundWindow(Handle);
+            Theme.RoundRegion(this, 18f);
         }
 
         protected override CreateParams CreateParams
@@ -4637,6 +4658,7 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
+            Theme.RoundRegion(this, 18f);
             int w = Math.Max(MinW, Width);
             int h = Math.Max(MinH, Height);
             if (w != Width || h != Height) Size = new Size(w, h);
