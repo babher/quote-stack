@@ -4506,6 +4506,18 @@ namespace QuoteStack
     }
     class Drawer : Form
     {
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                // CS_DROPSHADOW(0x20000)：让系统给无边框窗口画一圈投影。
+                // 自绘阴影需要分层窗口（逐像素 alpha），那会牵动拖拽与滚动，这里不碰几何。
+                cp.ClassStyle |= 0x20000;
+                return cp;
+            }
+        }
+
         const int WM_NCHITTEST = 0x0084;
         const int HTCLIENT = 1;
         const int HTLEFT = 10;
