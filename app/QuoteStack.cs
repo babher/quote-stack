@@ -65,7 +65,7 @@ namespace QuoteStack
         internal static void DrawRim(Graphics g, GraphicsPath path, Rectangle r)
         {
             Color a = IsLight ? Color.FromArgb(235, 255, 255, 255) : Color.FromArgb(70, 255, 255, 255);
-            Color b = IsLight ? Color.FromArgb(150, AccentSoft) : Color.FromArgb(34, AccentSoft);
+            Color b = IsLight ? Color.FromArgb(150, AccentSoft) : Color.FromArgb(84, AccentSoft);
             var box = new Rectangle(r.X, r.Y, Math.Max(2, r.Width), Math.Max(2, r.Height));
             using (var lg = new LinearGradientBrush(box, a, b, 55f))
             using (var pen = new Pen(lg, 1.2f))
@@ -123,7 +123,7 @@ namespace QuoteStack
                 BarBg       = Color.FromArgb(28, 28, 30);
                 PanelBg     = Color.FromArgb(28, 28, 32);
                 FieldBg     = Color.FromArgb(40, 42, 48);
-                RowActive   = Color.FromArgb(44, 46, 54);
+                RowActive     = Color.FromArgb(54, 46, 72);   // 深色下带一点淡紫
                 RowIdle     = Color.FromArgb(30, 30, 34);
                 RowHover    = Color.FromArgb(60, 64, 76);
                 DangerField = Color.FromArgb(52, 40, 40);
