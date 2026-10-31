@@ -1228,13 +1228,13 @@ namespace QuoteStack
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
-            Theme.RoundRegion(this, 14f);
+            Theme.RoundRegion(this, 8f);
         }
 
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
-            Theme.RoundRegion(this, 14f);
+            Theme.RoundRegion(this, 8f);
         }
 
         const int HOTKEY_ID = 9001;
@@ -4550,7 +4550,7 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
-            Theme.RoundRegion(this, 18f);
+            Theme.RoundRegion(this, 10f);
         }
 
         protected override CreateParams CreateParams
@@ -4658,7 +4658,7 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
-            Theme.RoundRegion(this, 18f);
+            Theme.RoundRegion(this, 10f);
             int w = Math.Max(MinW, Width);
             int h = Math.Max(MinH, Height);
             if (w != Width || h != Height) Size = new Size(w, h);
