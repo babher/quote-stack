@@ -24,7 +24,7 @@ namespace QuoteStack
         internal static Color TextPrimary, TextBody, TextMuted, TextMutedSoft, TextDisabled, TextSoft;
         internal static Color BarBg, PanelBg, FieldBg, RowActive, RowIdle, RowHover, DangerField, ToolBg, DeepBg;
         internal static Color Warn, Danger, FlashOk, FlashErr, BorderBar;
-        internal static Color BottomBar, ScrollThumb, OrdinalText, UrlText, PreviewText, HintText, GroupLabel, RowText, BarHint, SettingsText, SettingsMuted, DangerText, GearRing, SettingsBorder, SettingsArrow;
+        internal static Color BottomBar, ScrollThumb, OrdinalText, UrlText, Accent, AccentSoft, PreviewText, HintText, GroupLabel, RowText, BarHint, SettingsText, SettingsMuted, DangerText, GearRing, SettingsBorder, SettingsArrow;
 
         static Theme() { Apply(false); }
 
@@ -65,7 +65,7 @@ namespace QuoteStack
         internal static void DrawRim(Graphics g, GraphicsPath path, Rectangle r)
         {
             Color a = IsLight ? Color.FromArgb(235, 255, 255, 255) : Color.FromArgb(70, 255, 255, 255);
-            Color b = IsLight ? Color.FromArgb(140, 255, 198, 216) : Color.FromArgb(16, 255, 255, 255);
+            Color b = IsLight ? Color.FromArgb(150, AccentSoft) : Color.FromArgb(34, AccentSoft);
             var box = new Rectangle(r.X, r.Y, Math.Max(2, r.Width), Math.Max(2, r.Height));
             using (var lg = new LinearGradientBrush(box, a, b, 55f))
             using (var pen = new Pen(lg, 1.2f))
@@ -153,6 +153,9 @@ namespace QuoteStack
             UrlText        = light ? Color.FromArgb(40, 96, 200)   : Color.FromArgb(96, 148, 255);
             BottomBar      = light ? Color.FromArgb(243, 246, 251) : Color.FromArgb(34, 34, 38);
             ScrollThumb    = light ? Color.FromArgb(200, 206, 216) : Color.FromArgb(58, 60, 68);
+            // 点缀色：浅色用浅粉，深色用淡紫（用户 m10784）。
+            Accent         = light ? Color.FromArgb(240, 150, 178) : Color.FromArgb(196, 168, 255);
+            AccentSoft     = light ? Color.FromArgb(252, 214, 226) : Color.FromArgb(214, 196, 255);
         }
     }
     static class Program
@@ -3309,7 +3312,7 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
         {
             using (GraphicsPath path = Rounded(new Rectangle((int)x, (int)y, 16, 16), 4))
             {
-                using (var b = new SolidBrush(on ? Color.FromArgb(79, 124, 255) : Color.FromArgb(46, 48, 56)))
+                using (var b = new SolidBrush(on ? Theme.Accent : Color.FromArgb(46, 48, 56)))
                     g.FillPath(b, path);
                 using (var pen = new Pen(Theme.TextSoft, 1f))
                     g.DrawPath(pen, path);
