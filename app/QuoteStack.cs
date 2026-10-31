@@ -30,6 +30,17 @@ namespace QuoteStack
 
         // 渐变高光边：浅色走白→淡粉，深色走白 70 → 几乎透明，1.2px。
         // 圆角路径（内容板用）：四段弧，半径按较小边收敛。
+        // 只圆下方两角（底部栏用）：上方保持直角，和列表内容无缝相接。
+        internal static GraphicsPath BottomRounded(RectangleF r, float radius)
+        {
+            var p = new GraphicsPath();
+            float d = Math.Max(2f, Math.Min(radius * 2f, Math.Min(r.Width, r.Height)));
+            p.AddLine(r.X, r.Y, r.Right, r.Y);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
         internal static GraphicsPath RoundPath(RectangleF r, float radius)
         {
             var p = new GraphicsPath();
@@ -3196,7 +3207,8 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
             // bottom bar
             int barY = Height - BottomBarH;
             using (var b = new SolidBrush(Theme.BottomBar))
-                g.FillRectangle(b, 0, barY, Width, BottomBarH);
+            using (GraphicsPath barPath = Theme.BottomRounded(new RectangleF(0f, barY, Width, BottomBarH), 18f))
+                g.FillPath(b, barPath);
             int cnt = 0;
             for (int i = 0; i < n; i++) if (_checked[i]) cnt++;
             int usedCount = 0;
