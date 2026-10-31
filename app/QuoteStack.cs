@@ -44,10 +44,10 @@ namespace QuoteStack
         // 用窗口 Region 把四角挖圆：不依赖 DWM，任何 Win10/11 都生效（边缘无抗锯齿）。
         internal static void RoundRegion(Form f, float radius)
         {
-            if (f == null || f.IsDisposed || f.Width <= 0 || f.Height <= 0) return;
-            Region old = f.Region;
-            f.Region = new Region(RoundPath(new RectangleF(0f, 0f, f.Width, f.Height), radius));
-            if (old != null) old.Dispose();
+            if (f == null || f.IsDisposed) return;
+            if (f.Region != null) { Region r0 = f.Region; f.Region = null; r0.Dispose(); }
+            int hr = Native.DwmRound(f.Handle);
+            Store.LogStartup("corner: dwm=" + hr + " radius=" + (int)radius);
         }
 
         internal static GraphicsPath RoundPath(RectangleF r, float radius)
@@ -4804,6 +4804,12 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
 
         // Win11 原生窗口圆角：DWMWA_WINDOW_CORNER_PREFERENCE(33) = DWMWCP_ROUND(2)。
         // Win10 上调用无效但不报错，会保持方角。
+        internal static int DwmRound(IntPtr h)
+        {
+            if (h == IntPtr.Zero) return -1;
+            try { int v = 2; return DwmSetWindowAttribute(h, 33, ref v, 4); } catch { return -2; }
+        }
+
         internal static void RoundWindow(IntPtr h)
         {
             if (h == IntPtr.Zero) return;
