@@ -2634,6 +2634,17 @@ namespace QuoteStack
     class QuoteListView : Control
     {
         const int GroupHeight = 30;
+
+        // Collapsed groups: 今日 open by default, older groups collapsed.
+        readonly System.Collections.Generic.Dictionary<string, bool> _groupOpen =
+            new System.Collections.Generic.Dictionary<string, bool>(StringComparer.Ordinal);
+
+        bool IsGroupOpen(string grp)
+        {
+            bool open;
+            if (_groupOpen.TryGetValue(grp, out open)) return open;
+            return grp == "今日";
+        }
         const int PadLeft = 16;
         const int PadRight = 16;
         const int CtrlZone = 56;
@@ -2986,6 +2997,7 @@ namespace QuoteStack
                     cur += GroupHeight;
                     last = grp;
                 }
+                if (!IsGroupOpen(grp)) { _y[i] = cur; _h[i] = 0f; _bodyH[i] = 0f; continue; }
                 _y[i] = cur;
                 _bodyH[i] = RowBodyH(g, i);
                 _h[i] = BodyTop + _bodyH[i] + 4 + MetaH + (_open[i] && HasUrl(i) ? UrlH : 0) + RowPadBottom;
@@ -3138,12 +3150,13 @@ namespace QuoteStack
                 float gy = _groupY[gi] - _scroll;
                 if (gy + GroupHeight < 0 || gy > ch) continue;
                 using (var b = new SolidBrush(Theme.GroupLabel))
-                    g.DrawString(_groupNames[gi], _fGroup, b, PadLeft, gy + 8f);
+                g.DrawString(_groupNames[gi] + (IsGroupOpen(_groupNames[gi]) ? "   ▾" : "   ▸"), _fGroup, b, PadLeft, gy + 8f);
             }
 
             for (int i = 0; i < n; i++)
             {
                 float y = _y[i] - _scroll;
+                if (_h[i] <= 0.5f) continue;
                 if (y + _h[i] < 0 || y > ch) continue;
                 bool selected = i == _sel;
                 Rectangle box = new Rectangle(PadLeft - 8, (int)y, Width - 2 * (PadLeft - 8), (int)_h[i] - 4);
@@ -3340,6 +3353,22 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
             base.OnMouseDown(e);
             Focus();
             using (Graphics g = CreateGraphics()) { RebuildLayout(g); }
+
+            if (e.Y >= 0 && e.Y < ContentHeight)
+            {
+                for (int gi = 0; gi < _groupNames.Count; gi++)
+                {
+                    float hgy = _groupY[gi] - _scroll;
+                    if (e.Y >= hgy && e.Y < hgy + GroupHeight)
+                    {
+                        string grp = _groupNames[gi];
+                        _groupOpen[grp] = !IsGroupOpen(grp);
+                        using (Graphics g2 = CreateGraphics()) RebuildLayout(g2);
+                        Invalidate();
+                        return;
+                    }
+                }
+            }
             if (e.Y > ContentHeight)
             {
                 // The bottom bar is a control surface, not just a caption.
