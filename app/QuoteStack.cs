@@ -28,6 +28,29 @@ namespace QuoteStack
 
         static Theme() { Apply(false); }
 
+        // 渐变高光边：浅色走白→淡粉，深色走白 70 → 几乎透明，1.2px。
+        // 圆角路径（内容板用）：四段弧，半径按较小边收敛。
+        internal static GraphicsPath RoundPath(RectangleF r, float radius)
+        {
+            var p = new GraphicsPath();
+            float d = Math.Max(2f, Math.Min(radius * 2f, Math.Min(r.Width, r.Height)));
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        internal static void DrawRim(Graphics g, GraphicsPath path, Rectangle r)
+        {
+            Color a = IsLight ? Color.FromArgb(235, 255, 255, 255) : Color.FromArgb(70, 255, 255, 255);
+            Color b = IsLight ? Color.FromArgb(140, 255, 198, 216) : Color.FromArgb(16, 255, 255, 255);
+            var box = new Rectangle(r.X, r.Y, Math.Max(2, r.Width), Math.Max(2, r.Height));
+            using (var lg = new LinearGradientBrush(box, a, b, 55f))
+            using (var pen = new Pen(lg, 1.2f))
+                g.DrawPath(pen, path);
+        }
         internal static bool SystemPrefersLight()
         {
             try
@@ -2141,7 +2164,7 @@ namespace QuoteStack
             using (GraphicsPath path = Rounded(rect, 12))
             {
                 using (var b = new SolidBrush(bg)) g.FillPath(b, path);
-                using (var pen = new Pen(Theme.BorderBar)) g.DrawPath(pen, path);
+                Theme.DrawRim(g, path, rect);
             }
 
             string cnt = _count.ToString() + " 条";
@@ -3047,6 +3070,16 @@ namespace QuoteStack
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
             RebuildLayout(g);
             ClampScroll();
+
+            // 内容板：圆角 + 顶部 1px 内亮线（浅色白、深色白 30），并把行内容裁进圆角
+            RectangleF plateRect = new RectangleF(0f, 0f, Width, ContentHeight);
+            using (GraphicsPath plate = Theme.RoundPath(plateRect, 18f))
+            {
+                using (var pb = new SolidBrush(Theme.DeepBg)) g.FillPath(pb, plate);
+                g.SetClip(plate, CombineMode.Replace);
+            }
+            using (var hp = new Pen(Theme.IsLight ? Color.FromArgb(215, 255, 255, 255) : Color.FromArgb(30, 255, 255, 255), 1f))
+                g.DrawLine(hp, 18f, 0.5f, Width - 18f, 0.5f);
 
             int ch = ContentHeight;
             int n = _items.Count;
