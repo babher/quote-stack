@@ -3063,6 +3063,12 @@ namespace QuoteStack
             return new Rectangle(PadLeft, y, (int)BodyWidth, UrlH);
         }
 
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            Invalidate();
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -4714,6 +4720,13 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
         // The panel has no title bar, so resizing is done by hit-testing its edges.
         protected override void WndProc(ref Message m)
         {
+            // 交互式缩放时系统会把旧尺寸的后备缓冲贴进新区域（表现为同一行被横向复制）。
+            // 每次尺寸变化后强制整块重绘，重影即消失。
+            if (m.Msg == 0x0005)
+            {
+                if (_list != null && !_list.IsDisposed) { _list.Invalidate(); _list.Update(); }
+            }
+
             if (m.Msg == WM_NCHITTEST)
             {
                 base.WndProc(ref m);
