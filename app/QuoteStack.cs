@@ -3068,6 +3068,7 @@ namespace QuoteStack
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            g.Clear(Theme.PanelBg);   // 先整面擦除再画板，否则拉伸时旧像素会留成拖影
             RebuildLayout(g);
             ClampScroll();
 
@@ -3076,7 +3077,6 @@ namespace QuoteStack
             using (GraphicsPath plate = Theme.RoundPath(plateRect, 18f))
             {
                 using (var pb = new SolidBrush(Theme.DeepBg)) g.FillPath(pb, plate);
-                g.SetClip(plate, CombineMode.Replace);
             }
             using (var hp = new Pen(Theme.IsLight ? Color.FromArgb(215, 255, 255, 255) : Color.FromArgb(30, 255, 255, 255), 1f))
                 g.DrawLine(hp, 18f, 0.5f, Width - 18f, 0.5f);
