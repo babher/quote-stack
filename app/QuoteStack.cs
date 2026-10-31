@@ -3118,7 +3118,6 @@ namespace QuoteStack
             using (GraphicsPath plate = Theme.RoundPath(plateRect, 18f))
             {
                 using (var pb = new SolidBrush(Theme.DeepBg)) g.FillPath(pb, plate);
-                Theme.DrawRim(g, plate, Rectangle.Round(plateRect));
                 g.SetClip(plate, CombineMode.Replace);
             }
             using (var hp = new Pen(Theme.IsLight ? Color.FromArgb(215, 255, 255, 255) : Color.FromArgb(30, 255, 255, 255), 1f))
@@ -4739,6 +4738,10 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
         // user drags. Painted here so the header scrolls with the form, never with the list.
         protected override void OnPaint(PaintEventArgs e)
         {
+            Graphics g0 = e.Graphics;
+            g0.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath outer = Theme.RoundPath(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), 10f))
+                Theme.DrawRim(g0, outer, new Rectangle(0, 0, Width, Height));
             base.OnPaint(e);
             Graphics g = e.Graphics;
             using (var b = new SolidBrush(Theme.FieldBg))
