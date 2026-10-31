@@ -1289,7 +1289,7 @@ namespace QuoteStack
             Size = new Size(260, 52);
             BackColor = Theme.BarBg;
             DoubleBuffered = true;
-            Text = "QuoteStack";
+            Text = "拾句";
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
 
             _flash.Interval = 2000;
@@ -1361,7 +1361,7 @@ namespace QuoteStack
             _preview = Store.LastText();
 
             _tray.Icon = SystemIcons.Application;
-            _tray.Text = "QuoteStack";
+            _tray.Text = "拾句";
             var menu = new ContextMenuStrip();
             menu.Items.Add("打开引用列表", null, delegate { OpenDrawer(); });
             menu.Items.Add("设置…", null, delegate { OpenSettings(); });
@@ -3954,7 +3954,7 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
 
         public SettingsForm(string current)
         {
-            Text = "QuoteStack 设置";
+            Text = "拾句 设置";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
             MaximizeBox = false;
@@ -4635,7 +4635,7 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
             BackColor = Theme.ToolBg;
             Padding = new Padding(1, 1 + HeaderH, 1, 1);
             KeyPreview = true;
-            Text = "QuoteStack";
+            Text = "拾句";
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
                 | ControlStyles.UserPaint, true);
             _list.Dock = DockStyle.Fill;
@@ -4782,7 +4782,7 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
                 g.FillRectangle(b, 1, 1, ClientSize.Width - 2, HeaderH);
             using (var b = new SolidBrush(Theme.TextBody))
             using (var f = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold))
-                g.DrawString("引用", f, b, 12f, 7f);
+            g.DrawString("拾句", f, b, 12f, 7f);
             using (var b = new SolidBrush(Theme.TextSoft))
             using (var f = new Font("Microsoft YaHei UI", 8.5f))
                 g.DrawString("拖动这里移动 · 边缘可缩放 · Esc 关闭", f, b, 52f, 9f);
