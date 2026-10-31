@@ -1350,6 +1350,17 @@ namespace QuoteStack
                     Invalidate();
                     return;
                 }
+                // Dragged away from the edge: back to a floating bar (this is how the
+                // other side gets chosen, since a docked strip is too narrow to drag far).
+                bool stillDocked = _dock > 0 ? (Right >= wa.Right - 20) : (Left <= wa.Left + 20);
+                if (!stillDocked)
+                {
+                    _dock = 0; _dockOpen = true;
+                    Bounds = new Rectangle(Left, Top, 260, Height);
+                    Invalidate();
+                    return;
+                }
+
                 if (!_dockOpen) return;
                 // Expanding is an explicit click now: hovering must not yank the strip open.
                 Bounds = new Rectangle(_dock > 0 ? wa.Right - 260 - 4 : wa.Left + 4, Top, 260, Height);
@@ -2215,6 +2226,7 @@ namespace QuoteStack
 
         protected override void OnClick(EventArgs e)
         {
+            if (_mouseMoved) return;   // the user dragged, not clicked
             if (_dock != 0 && _dockOpen) { _dockOpen = false; Rectangle wa = Screen.FromControl(this).WorkingArea; Bounds = new Rectangle(_dock > 0 ? wa.Right - DockedWidth - 4 : wa.Left + 4, Top, DockedWidth, Height); Invalidate(); return; }
             if (_dock != 0 && !_dockOpen) { _dockOpen = true; Rectangle wa2 = Screen.FromControl(this).WorkingArea; Bounds = new Rectangle(_dock > 0 ? wa2.Right - 260 - 4 : wa2.Left + 4, Top, 260, Height); Invalidate(); return; }
             base.OnClick(e);
