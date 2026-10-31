@@ -4526,6 +4526,12 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
     }
     class Drawer : Form
     {
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Native.RoundWindow(Handle);
+        }
+
         protected override CreateParams CreateParams
         {
             get
@@ -4771,6 +4777,17 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
 
     static class Native
     {
+        [DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+        // Win11 原生窗口圆角：DWMWA_WINDOW_CORNER_PREFERENCE(33) = DWMWCP_ROUND(2)。
+        // Win10 上调用无效但不报错，会保持方角。
+        internal static void RoundWindow(IntPtr h)
+        {
+            if (h == IntPtr.Zero) return;
+            try { int v = 2; DwmSetWindowAttribute(h, 33, ref v, 4); } catch { }
+        }
+
         public const uint MOD_ALT = 0x0001;
         const int CF_UNICODETEXT = 13;
         const uint GMEM_MOVEABLE = 0x0002;
