@@ -3118,6 +3118,7 @@ namespace QuoteStack
             using (GraphicsPath plate = Theme.RoundPath(plateRect, 18f))
             {
                 using (var pb = new SolidBrush(Theme.DeepBg)) g.FillPath(pb, plate);
+                Theme.DrawRim(g, plate, Rectangle.Round(plateRect));
                 g.SetClip(plate, CombineMode.Replace);
             }
             using (var hp = new Pen(Theme.IsLight ? Color.FromArgb(215, 255, 255, 255) : Color.FromArgb(30, 255, 255, 255), 1f))
