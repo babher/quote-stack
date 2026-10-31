@@ -1279,6 +1279,11 @@ namespace QuoteStack
         Drawer _drawer;
         Point _mouseDown;
         bool _mouseMoved;
+        const int DockedWidth = 56;
+        int _dock;
+        bool _dockOpen;
+        int _dockLeftAt;
+        readonly System.Windows.Forms.Timer _dockTimer = new System.Windows.Forms.Timer();
 
         public FloatBar()
         {
@@ -1329,6 +1334,40 @@ namespace QuoteStack
                 _lastForeign = fg;
             };
             _watch.Start();
+
+            _dockTimer.Interval = 200;
+            _dockTimer.Tick += delegate
+            {
+                Rectangle wa = Screen.FromControl(this).WorkingArea;
+                if ((Control.MouseButtons & MouseButtons.Left) == MouseButtons.Left) return;
+                if (_dock == 0)
+                {
+                    bool atLeft = Left <= wa.Left + 8;
+                    bool atRight = Right >= wa.Right - 8;
+                    if (!atLeft && !atRight) return;
+                    _dock = atLeft ? -1 : 1;
+                    _dockOpen = false;
+                    Bounds = new Rectangle(_dock > 0 ? wa.Right - DockedWidth : wa.Left, Top, DockedWidth, Height);
+                    Invalidate();
+                    return;
+                }
+                bool over = Bounds.Contains(Cursor.Position);
+                if (over && !_dockOpen)
+                {
+                    _dockOpen = true; _dockLeftAt = 0;
+                    Bounds = new Rectangle(_dock > 0 ? wa.Right - 260 : wa.Left, Top, 260, Height);
+                    Invalidate();
+                }
+                else if (!over && _dockOpen)
+                {
+                    if (_dockLeftAt == 0) { _dockLeftAt = Environment.TickCount; return; }
+                    if (Environment.TickCount - _dockLeftAt < 2000) return;
+                    _dockOpen = false; _dockLeftAt = 0;
+                    Bounds = new Rectangle(_dock > 0 ? wa.Right - DockedWidth : wa.Left, Top, DockedWidth, Height);
+                    Invalidate();
+                }
+            };
+            _dockTimer.Start();
         }
 
         static bool IsOwnWindow(IntPtr hwnd)
@@ -2185,8 +2224,18 @@ namespace QuoteStack
             base.OnFormClosing(e);
         }
 
+        void DrawDocked(Graphics g)
+        {
+            g.Clear(Theme.BarBg);
+            string n = _count > 99 ? "99+" : _count.ToString();
+            using (var b = new SolidBrush(Theme.TextPrimary))
+            using (var f = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold))
+                g.DrawString(n, f, b, 6f, (Height - g.MeasureString(n, f).Height) / 2f);
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
+            if (_dock != 0 && !_dockOpen) { DrawDocked(e.Graphics); return; }
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
