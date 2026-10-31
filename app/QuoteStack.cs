@@ -15,11 +15,110 @@ using System.Windows.Forms;
 
 namespace QuoteStack
 {
+    // ---------- 主题令牌（P1）----------
+    // 换皮只改这里；像素由各控件的 OnPaint 使用这些角色色。
+    static class Theme
+    {
+        internal static bool IsLight;
+
+        internal static Color TextPrimary, TextBody, TextMuted, TextMutedSoft, TextDisabled, TextSoft;
+        internal static Color BarBg, PanelBg, FieldBg, RowActive, RowIdle, RowHover, DangerField, ToolBg, DeepBg;
+        internal static Color Warn, Danger, FlashOk, FlashErr, BorderBar;
+        internal static Color BottomBar, ScrollThumb, OrdinalText, UrlText, PreviewText, HintText, GroupLabel, RowText, BarHint, SettingsText, SettingsMuted, DangerText, GearRing, SettingsBorder, SettingsArrow;
+
+        static Theme() { Apply(false); }
+
+        internal static bool SystemPrefersLight()
+        {
+            try
+            {
+                object v = Microsoft.Win32.Registry.GetValue(
+                    @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                    "AppsUseLightTheme", null);
+                return (v is int) && ((int)v != 0);
+            }
+            catch { return false; }   // 读不到就按深色（= 改造前的观感）
+        }
+
+        internal static void Apply(bool light)
+        {
+            IsLight = light;
+            if (light)
+            {
+                TextPrimary   = Color.FromArgb(38, 42, 52);
+                TextBody      = Color.FromArgb(58, 65, 80);
+                TextMuted     = Color.FromArgb(110, 118, 136);
+                TextMutedSoft = Color.FromArgb(112, 120, 138);
+                TextDisabled  = Color.FromArgb(154, 161, 174);
+                TextSoft      = Color.FromArgb(122, 130, 150);
+
+                BarBg       = Color.FromArgb(246, 247, 251);
+                PanelBg     = Color.FromArgb(250, 251, 255);
+                FieldBg     = Color.FromArgb(243, 245, 250);
+                RowActive   = Color.FromArgb(247, 236, 241);
+                RowIdle     = Color.FromArgb(252, 252, 254);
+                RowHover    = Color.FromArgb(232, 236, 244);
+                DangerField = Color.FromArgb(253, 235, 235);
+                ToolBg      = Color.FromArgb(238, 241, 246);
+                DeepBg      = Color.FromArgb(240, 242, 247);
+
+                Warn     = Color.FromArgb(201, 122, 34);
+                Danger   = Color.FromArgb(214, 88, 122);
+                FlashOk  = Color.FromArgb(226, 236, 252);
+                FlashErr = Color.FromArgb(252, 232, 232);
+                BorderBar = Color.FromArgb(120, 134, 160, 80);
+            }
+            else
+            {
+                TextPrimary   = Color.FromArgb(228, 231, 238);
+                TextBody      = Color.FromArgb(196, 202, 214);
+                TextMuted     = Color.FromArgb(150, 156, 168);
+                TextMutedSoft = Color.FromArgb(150, 156, 170);
+                TextDisabled  = Color.FromArgb(96, 100, 112);
+                TextSoft      = Color.FromArgb(120, 126, 140);
+
+                BarBg       = Color.FromArgb(28, 28, 30);
+                PanelBg     = Color.FromArgb(28, 28, 32);
+                FieldBg     = Color.FromArgb(40, 42, 48);
+                RowActive   = Color.FromArgb(44, 46, 54);
+                RowIdle     = Color.FromArgb(30, 30, 34);
+                RowHover    = Color.FromArgb(60, 64, 76);
+                DangerField = Color.FromArgb(52, 40, 40);
+                ToolBg      = Color.FromArgb(52, 54, 62);
+                DeepBg      = Color.FromArgb(24, 24, 26);
+
+                Warn     = Color.FromArgb(240, 170, 110);
+                Danger   = Color.FromArgb(255, 150, 140);
+                FlashOk  = Color.FromArgb(38, 52, 92);
+                FlashErr = Color.FromArgb(72, 34, 34);
+                BorderBar = Color.FromArgb(46, 255, 255, 255);
+            }
+
+            // 第三批：零散文本与线条。浅色下这些必须换成深墨色，否则白底上全是灰字。
+            PreviewText    = light ? Color.FromArgb(90, 96, 110)   : Color.FromArgb(168, 168, 176);
+            HintText       = light ? Color.FromArgb(40, 92, 200)   : Color.FromArgb(120, 160, 255);
+            GroupLabel     = light ? Color.FromArgb(120, 128, 142) : Color.FromArgb(126, 132, 146);
+            RowText        = light ? Color.FromArgb(42, 46, 56)    : Color.FromArgb(232, 232, 238);
+            BarHint        = light ? Color.FromArgb(110, 118, 132) : Color.FromArgb(140, 146, 160);
+            SettingsText   = light ? Color.FromArgb(38, 42, 52)    : Color.FromArgb(230, 233, 240);
+            SettingsMuted  = light ? Color.FromArgb(110, 118, 136) : Color.FromArgb(140, 146, 158);
+            DangerText     = light ? Color.FromArgb(176, 44, 66)   : Color.FromArgb(255, 200, 190);
+            GearRing       = light ? Color.FromArgb(150, 158, 172) : Color.FromArgb(96, 102, 118);
+            SettingsBorder = light ? Color.FromArgb(210, 215, 224) : Color.FromArgb(60, 62, 72);
+            SettingsArrow  = light ? Color.FromArgb(122, 130, 146) : Color.FromArgb(160, 166, 178);
+            OrdinalText    = light ? Color.FromArgb(22, 120, 80)   : Color.FromArgb(106, 227, 160);
+            UrlText        = light ? Color.FromArgb(40, 96, 200)   : Color.FromArgb(96, 148, 255);
+            BottomBar      = light ? Color.FromArgb(243, 246, 251) : Color.FromArgb(34, 34, 38);
+            ScrollThumb    = light ? Color.FromArgb(200, 206, 216) : Color.FromArgb(58, 60, 68);
+        }
+    }
     static class Program
     {
         [STAThread]
         static void Main(string[] args)
         {
+            // 先定主题：下面所有控件的构造都读 Theme.*，晚一步就会用错配色。
+            Theme.Apply(Theme.SystemPrefersLight());
             // Runs before every mode: a temp file left by an interrupted delete is
             // never valid data and must not survive a restart.
             Store.CleanupTemp();
@@ -1130,7 +1229,7 @@ namespace QuoteStack
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
             Size = new Size(260, 52);
-            BackColor = Color.FromArgb(28, 28, 30);
+            BackColor = Theme.BarBg;
             DoubleBuffered = true;
             Text = "QuoteStack";
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
@@ -1336,6 +1435,24 @@ namespace QuoteStack
 
         protected override void WndProc(ref Message m)
         {
+            if (m.Msg == 0x001A)   // WM_SETTINGCHANGE：系统深浅色被切换
+            {
+                bool light = Theme.SystemPrefersLight();
+                if (light != Theme.IsLight)
+                {
+                    Theme.Apply(light);
+                    BackColor = Theme.BarBg;
+                    if (_drawer != null && !_drawer.IsDisposed)
+                    {
+                        _drawer.BackColor = Theme.PanelBg;
+                        _drawer.ListView.BackColor = Theme.DeepBg;
+                        _drawer.Invalidate(true);
+                        _drawer.ListView.Invalidate();
+                    }
+                    Invalidate();
+                }
+            }
+
             if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HOTKEY_ID)
             {
                 // One key, decided by what the user is doing (rules m01388, m03988, m04191, m04356):
@@ -2016,15 +2133,15 @@ namespace QuoteStack
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-            Color bg = Color.FromArgb(28, 28, 30);
-            if (_flashKind == KindOk) bg = Color.FromArgb(38, 52, 92);
-            else if (_flashKind == KindErr) bg = Color.FromArgb(72, 34, 34);
+            Color bg = Theme.BarBg;
+            if (_flashKind == KindOk) bg = Theme.FlashOk;
+            else if (_flashKind == KindErr) bg = Theme.FlashErr;
 
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using (GraphicsPath path = Rounded(rect, 12))
             {
                 using (var b = new SolidBrush(bg)) g.FillPath(b, path);
-                using (var pen = new Pen(Color.FromArgb(46, 255, 255, 255))) g.DrawPath(pen, path);
+                using (var pen = new Pen(Theme.BorderBar)) g.DrawPath(pen, path);
             }
 
             string cnt = _count.ToString() + " 条";
@@ -2035,24 +2152,30 @@ namespace QuoteStack
             float x = 14f + cntSize.Width + 10f;
             float avail = Width - x - 12f;
 
+            // "+1" 画在 (Width - ps.Width - 12)，与正文可用区右端重合，不先让位就会压在正文尾巴上。
+            bool plusUp = _plusAt >= 0;
+            SizeF ps = plusUp ? g.MeasureString("+1", _fPlus) : SizeF.Empty;
+            if (plusUp) avail -= ps.Width + 10f;
+
             string sub;
             Color subColor;
             if (_status != null)
             {
                 sub = _status;
-                subColor = Color.FromArgb(240, 170, 110);
+                subColor = Theme.Warn;
             }
             else if (_hint != null)
             {
                 sub = _hint;
-                subColor = Color.FromArgb(120, 160, 255);
+                subColor = Theme.HintText;
             }
             else
             {
                 sub = _preview == null ? "还没有采集" : Flatten(_preview);
-                subColor = Color.FromArgb(168, 168, 176);
+                subColor = Theme.PreviewText;
             }
-            if (avail <= 8f) return;
+            if (avail > 8f)
+            {
 
             while (sub.Length > 0 && g.MeasureString(sub, _fSub).Width > avail)
                 sub = sub.Substring(0, sub.Length - 1);
@@ -2062,6 +2185,7 @@ namespace QuoteStack
                 SizeF subSize = g.MeasureString(sub, _fSub);
                 using (var b = new SolidBrush(subColor))
                     g.DrawString(sub, _fSub, b, x, (Height - subSize.Height) / 2f);
+            }
             }
 
             // "+1" feedback (user rule m01675): the count changing is too quiet to notice,
@@ -2078,11 +2202,10 @@ namespace QuoteStack
                 {
                     float t = el / 900f;
                     int alpha = (int)(255f * (1f - t * t));
-                    float dy = -10f * t;
+                    float dy = -6f * t;   // 17pt 字高 31.6px，52px 条里升 10px 会贴边
                     if (alpha > 0)
                     {
-                        SizeF ps = g.MeasureString("+1", _fPlus);
-                        using (var b = new SolidBrush(Color.FromArgb(alpha, 106, 227, 160)))
+                        using (var b = new SolidBrush(Color.FromArgb(alpha, Theme.OrdinalText)))
                             g.DrawString("+1", _fPlus, b, Width - ps.Width - 12f, (Height - ps.Height) / 2f + dy);
                     }
                 }
@@ -2506,7 +2629,7 @@ namespace QuoteStack
         {
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
                 | ControlStyles.UserPaint | ControlStyles.Selectable, true);
-            BackColor = Color.FromArgb(24, 24, 26);
+            BackColor = Theme.DeepBg;
             TabStop = true;
         }
 
@@ -2931,7 +3054,7 @@ namespace QuoteStack
 
             if (n == 0)
             {
-                using (var b = new SolidBrush(Color.FromArgb(150, 156, 170)))
+                using (var b = new SolidBrush(Theme.TextMutedSoft))
                     g.DrawString("还没有记录。选中文字后按热键。", _fBody, b, PadLeft, 40f);
             }
 
@@ -2939,7 +3062,7 @@ namespace QuoteStack
             {
                 float gy = _groupY[gi] - _scroll;
                 if (gy + GroupHeight < 0 || gy > ch) continue;
-                using (var b = new SolidBrush(Color.FromArgb(126, 132, 146)))
+                using (var b = new SolidBrush(Theme.GroupLabel))
                     g.DrawString(_groupNames[gi], _fGroup, b, PadLeft, gy + 8f);
             }
 
@@ -2951,14 +3074,14 @@ namespace QuoteStack
                 Rectangle box = new Rectangle(PadLeft - 8, (int)y, Width - 2 * (PadLeft - 8), (int)_h[i] - 4);
                 using (GraphicsPath path = Rounded(box, 10))
                 {
-                    using (var b = new SolidBrush(selected ? Color.FromArgb(44, 46, 54) : Color.FromArgb(30, 30, 34)))
+                    using (var b = new SolidBrush(selected ? Theme.RowActive : Theme.RowIdle))
                         g.FillPath(b, path);
                 }
 
                 string body = _open[i]
                     ? _items[i].DisplayText.Trim()
                     : TwoLines(g, _items[i].DisplayText.Trim(), _fBody, TextWidth(i));
-                using (var b = new SolidBrush(Color.FromArgb(232, 232, 238)))
+                using (var b = new SolidBrush(Theme.RowText))
                     g.DrawString(body, _fBody, b, new RectangleF(PadLeft, y + BodyTop, TextWidth(i), _bodyH[i]));
 
                 // The picture itself, so a quote of an image is recognisable without opening it.
@@ -2983,7 +3106,7 @@ namespace QuoteStack
                 float metaY = y + BodyTop + _bodyH[i] + 4;
                 string meta = _items[i].Source + " · " + Records.Stamp(_items[i], now)
                     + (_items[i].Used ? " · 已引用" : "");
-                using (var b = new SolidBrush(Color.FromArgb(150, 156, 170)))
+                using (var b = new SolidBrush(Theme.TextMutedSoft))
                     g.DrawString(meta, _fMeta, b, PadLeft, metaY);
 
                 // Expanded rows also show where the quote came from, and a click copies it.
@@ -2994,7 +3117,7 @@ namespace QuoteStack
                     bool cut;
                     string shown = FitPrefix(g, _fMeta, _items[i].Url, BodyWidth, out used, out cut);
                     if (cut) shown = shown + "…";
-                    using (var b = new SolidBrush(Color.FromArgb(96, 148, 255)))
+                    using (var b = new SolidBrush(Theme.UrlText))
                         g.DrawString(shown, _fMeta, b, PadLeft, urlY);
                 }
 
@@ -3008,7 +3131,7 @@ namespace QuoteStack
                     {
                         string os = ord.ToString();
                         SizeF osz = g.MeasureString(os, _fOrd);
-                        using (var b = new SolidBrush(Color.FromArgb(106, 227, 160)))
+                        using (var b = new SolidBrush(Theme.OrdinalText))
                             g.DrawString(os, _fOrd, b, Width - PadRight - 52 - osz.Width, y + BodyTop + 1);
                     }
                 }
@@ -3024,14 +3147,14 @@ namespace QuoteStack
                     int thumbH = Math.Max(28, (int)(trackH * (ch / _total)));
                     int maxScroll = Math.Max(1, (int)(_total - ch));
                     int thumbY = 6 + (int)((trackH - thumbH) * (_scroll / (float)maxScroll));
-                    using (var b = new SolidBrush(Color.FromArgb(58, 60, 68)))
+                    using (var b = new SolidBrush(Theme.ScrollThumb))
                         g.FillRectangle(b, Width - 7, thumbY, 4, thumbH);
                 }
             }
 
             // bottom bar
             int barY = Height - BottomBarH;
-            using (var b = new SolidBrush(Color.FromArgb(34, 34, 38)))
+            using (var b = new SolidBrush(Theme.BottomBar))
                 g.FillRectangle(b, 0, barY, Width, BottomBarH);
             int cnt = 0;
             for (int i = 0; i < n; i++) if (_checked[i]) cnt++;
@@ -3050,7 +3173,7 @@ namespace QuoteStack
             string all = (n > 0 && cnt == n) ? "取消全选" : "全选";
             SizeF asz = g.MeasureString(all, _fBar);
             bx -= asz.Width;
-            using (var b = new SolidBrush(n > 0 ? Color.FromArgb(150, 200, 255) : Color.FromArgb(96, 100, 112)))
+            using (var b = new SolidBrush(n > 0 ? Theme.HintText : Theme.TextDisabled))
                 g.DrawString(all, _fBar, b, bx, barY + 9f);
             if (n > 0) _allRect = new RectangleF(bx - 6f, barY + 3f, asz.Width + 12f, BottomBarH - 5f);
             bx -= 12f;
@@ -3058,7 +3181,7 @@ namespace QuoteStack
             string del = "删除 " + cnt + " 项";
             SizeF dsz = g.MeasureString(del, _fBar);
             bx -= dsz.Width;
-            using (var b = new SolidBrush(cnt > 0 ? Color.FromArgb(255, 120, 120) : Color.FromArgb(96, 100, 112)))
+            using (var b = new SolidBrush(cnt > 0 ? Theme.DangerText : Theme.TextDisabled))
                 g.DrawString(del, _fBar, b, bx, barY + 9f);
             if (cnt > 0) _delRect = new RectangleF(bx - 6f, barY + 3f, dsz.Width + 12f, BottomBarH - 5f);
             bx -= 12f;
@@ -3066,7 +3189,7 @@ namespace QuoteStack
             string clr = "清理已引用(" + usedCount + ")";
             SizeF csz = g.MeasureString(clr, _fBar);
             bx -= csz.Width;
-            using (var b = new SolidBrush(usedCount > 0 ? Color.FromArgb(120, 176, 255) : Color.FromArgb(96, 100, 112)))
+            using (var b = new SolidBrush(usedCount > 0 ? Theme.HintText : Theme.TextDisabled))
                 g.DrawString(clr, _fBar, b, bx, barY + 9f);
             if (usedCount > 0) _clearRect = new RectangleF(bx - 6f, barY + 3f, csz.Width + 12f, BottomBarH - 5f);
 
@@ -3077,7 +3200,7 @@ namespace QuoteStack
                 : (cnt > 0
                     ? ("已勾选 " + cnt + "/" + n + " · 按热键插入")
                     : "未勾选 · 勾选后按热键插入");
-            Color barColor = _hint != null ? Color.FromArgb(240, 170, 110) : Color.FromArgb(140, 146, 160);
+            Color barColor = _hint != null ? Theme.Warn : Theme.BarHint;
             float room = bx - 14f - PadLeft;
             if (room > 16f)
             {
@@ -3114,7 +3237,7 @@ namespace QuoteStack
             {
                 using (var b = new SolidBrush(on ? Color.FromArgb(79, 124, 255) : Color.FromArgb(46, 48, 56)))
                     g.FillPath(b, path);
-                using (var pen = new Pen(Color.FromArgb(120, 126, 140), 1f))
+                using (var pen = new Pen(Theme.TextSoft, 1f))
                     g.DrawPath(pen, path);
             }
             if (!on) return;
@@ -3290,15 +3413,15 @@ namespace QuoteStack
             ShowInTaskbar = false;
             TopMost = true;
             ClientSize = new Size(440, 470);
-            BackColor = Color.FromArgb(28, 28, 32);
-            ForeColor = Color.FromArgb(228, 231, 238);
+            BackColor = Theme.PanelBg;
+            ForeColor = Theme.TextPrimary;
             Font = new Font("Microsoft YaHei UI", 9.5f);
 
             Panel panel = new Panel();
             panel.Location = new Point(14, 12);
             panel.Size = new Size(412, 370);
             panel.AutoScroll = true;
-            panel.BackColor = Color.FromArgb(28, 28, 32);
+            panel.BackColor = Theme.PanelBg;
             Controls.Add(panel);
 
             int y = 2;
@@ -3306,7 +3429,7 @@ namespace QuoteStack
             {
                 Label empty = new Label();
                 empty.Text = "还没有插入过的内容。";
-                empty.ForeColor = Color.FromArgb(150, 156, 168);
+                empty.ForeColor = Theme.TextMuted;
                 empty.AutoSize = true;
                 empty.Location = new Point(4, 8);
                 panel.Controls.Add(empty);
@@ -3322,8 +3445,8 @@ namespace QuoteStack
                 cb.AutoSize = false;
                 cb.Size = new Size(384, 46);
                 cb.Location = new Point(2, y);
-                cb.ForeColor = Color.FromArgb(228, 231, 238);
-                cb.BackColor = Color.FromArgb(28, 28, 32);
+                cb.ForeColor = Theme.TextPrimary;
+                cb.BackColor = Theme.PanelBg;
                 cb.FlatStyle = FlatStyle.Flat;
                 panel.Controls.Add(cb);
                 _boxes.Add(cb);
@@ -3333,7 +3456,7 @@ namespace QuoteStack
             _tip.AutoSize = false;
             _tip.Size = new Size(412, 22);
             _tip.Location = new Point(14, 390);
-            _tip.ForeColor = Color.FromArgb(150, 156, 168);
+            _tip.ForeColor = Theme.TextMuted;
             _tip.Text = _items.Count + " 条已引用内容";
             Controls.Add(_tip);
 
@@ -3342,8 +3465,8 @@ namespace QuoteStack
             del.Size = new Size(130, 32);
             del.Location = new Point(14, 420);
             del.FlatStyle = FlatStyle.Flat;
-            del.ForeColor = Color.FromArgb(255, 200, 190);
-            del.BackColor = Color.FromArgb(52, 40, 40);
+            del.ForeColor = Theme.DangerText;
+            del.BackColor = Theme.DangerField;
             del.Click += delegate { DeleteChecked(); };
             Controls.Add(del);
 
@@ -3409,7 +3532,7 @@ namespace QuoteStack
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
             Size = new Size(D, D);
-            BackColor = Color.FromArgb(44, 46, 54);
+            BackColor = Theme.RowActive;
             Cursor = Cursors.Hand;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
                 | ControlStyles.UserPaint, true);
@@ -3448,16 +3571,16 @@ namespace QuoteStack
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             RectangleF box = new RectangleF(0.5f, 0.5f, D - 2, D - 2);
-            using (SolidBrush b = new SolidBrush(_hover ? Color.FromArgb(60, 64, 76) : Color.FromArgb(44, 46, 54)))
+            using (SolidBrush b = new SolidBrush(_hover ? Theme.RowHover : Theme.RowActive))
                 g.FillEllipse(b, box);
-            using (Pen ring = new Pen(Color.FromArgb(96, 102, 118)))
+            using (Pen ring = new Pen(Theme.GearRing))
                 g.DrawEllipse(ring, box);
 
             // Gear: eight teeth around a ring plus a hub, drawn as lines so no icon file or
             // font glyph has to ship with the app.
             float cx = D / 2f;
             float cy = D / 2f;
-            Color ink = _hover ? Color.FromArgb(228, 231, 238) : Color.FromArgb(196, 202, 214);
+            Color ink = _hover ? Theme.TextPrimary : Theme.TextBody;
             using (Pen p = new Pen(ink, 1.6f))
             {
                 for (int i = 0; i < 8; i++)
@@ -3641,7 +3764,7 @@ namespace QuoteStack
                 | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
             Cursor = Cursors.Hand;
             Height = 46;
-            BackColor = Color.FromArgb(40, 42, 48);
+            BackColor = Theme.FieldBg;
         }
 
         public string Title
@@ -3667,11 +3790,11 @@ namespace QuoteStack
             base.OnPaint(e);
             Graphics g = e.Graphics;
             Rectangle box = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (Pen border = new Pen(Color.FromArgb(60, 62, 72)))
+            using (Pen border = new Pen(Theme.SettingsBorder))
                 g.DrawRectangle(border, box);
 
             using (Font f = new Font("Microsoft YaHei UI", 10f))
-            using (SolidBrush textBrush = new SolidBrush(Color.FromArgb(230, 233, 240)))
+            using (SolidBrush textBrush = new SolidBrush(Theme.SettingsText))
                 g.DrawString(_title, f, textBrush, new PointF(14f, (Height - f.Height) / 2f - 1f));
 
             if (_valueText.Length > 0)
@@ -3679,13 +3802,13 @@ namespace QuoteStack
                 using (Font small = new Font("Microsoft YaHei UI", 8.5f))
                     TextRenderer.DrawText(g, _valueText, small,
                         new Rectangle(140, 0, Width - 140 - 30, Height),
-                        Color.FromArgb(140, 146, 158),
+                        Theme.SettingsMuted,
                         TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
             }
 
             int cx = Width - 20;
             int cy = Height / 2;
-            using (Pen chevron = new Pen(Color.FromArgb(160, 166, 178), 1.8f))
+            using (Pen chevron = new Pen(Theme.SettingsArrow, 1.8f))
             {
                 if (_expanded)
                     g.DrawLines(chevron, new Point[] { new Point(cx - 5, cy - 2), new Point(cx, cy + 3), new Point(cx + 5, cy - 2) });
@@ -3727,8 +3850,8 @@ namespace QuoteStack
             MinimizeBox = false;
             ShowInTaskbar = false;
             TopMost = true;
-            BackColor = Color.FromArgb(28, 28, 32);
-            ForeColor = Color.FromArgb(228, 231, 238);
+            BackColor = Theme.PanelBg;
+            ForeColor = Theme.TextPrimary;
             Font = new Font("Microsoft YaHei UI", 9.5f);
 
             _row.Title = "热键修改";
@@ -3746,8 +3869,8 @@ namespace QuoteStack
             _box.Value = current == null ? "" : current;
             _box.Location = new Point(0, 0);
             _box.Size = new Size(340, 26);
-            _box.BackColor = Color.FromArgb(40, 42, 48);
-            _box.ForeColor = Color.FromArgb(228, 231, 238);
+            _box.BackColor = Theme.FieldBg;
+            _box.ForeColor = Theme.TextPrimary;
             _box.BorderStyle = BorderStyle.FixedSingle;
             _box.ValueCaptured += delegate { _row.ValueText = _box.Value; };
             _body.Controls.Add(_box);
@@ -3757,7 +3880,7 @@ namespace QuoteStack
             hint.AutoSize = false;
             hint.Size = new Size(340, 18);
             hint.Location = new Point(0, 34);
-            hint.ForeColor = Color.FromArgb(150, 156, 168);
+            hint.ForeColor = Theme.TextMuted;
             hint.Font = new Font("Microsoft YaHei UI", 8.5f);
             _body.Controls.Add(hint);
 
@@ -3766,7 +3889,7 @@ namespace QuoteStack
             _msg.AutoSize = false;
             _msg.Size = new Size(340, 18);
             _msg.Location = new Point(0, 34);
-            _msg.ForeColor = Color.FromArgb(255, 150, 140);
+            _msg.ForeColor = Theme.Danger;
             _msg.Font = new Font("Microsoft YaHei UI", 8.5f);
             _body.Controls.Add(_msg);
             _msg.BringToFront();
@@ -3846,8 +3969,8 @@ namespace QuoteStack
             b.Size = new Size(w, 32);
             b.Location = new Point(x, y);
             b.FlatStyle = FlatStyle.Flat;
-            b.ForeColor = Color.FromArgb(228, 231, 238);
-            b.BackColor = Color.FromArgb(44, 46, 54);
+            b.ForeColor = Theme.TextPrimary;
+            b.BackColor = Theme.RowActive;
             return b;
         }
 
@@ -4380,7 +4503,7 @@ namespace QuoteStack
             ShowInTaskbar = false;
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
-            BackColor = Color.FromArgb(52, 54, 62);
+            BackColor = Theme.ToolBg;
             Padding = new Padding(1, 1 + HeaderH, 1, 1);
             KeyPreview = true;
             Text = "QuoteStack";
@@ -4521,12 +4644,12 @@ namespace QuoteStack
         {
             base.OnPaint(e);
             Graphics g = e.Graphics;
-            using (var b = new SolidBrush(Color.FromArgb(40, 42, 48)))
+            using (var b = new SolidBrush(Theme.FieldBg))
                 g.FillRectangle(b, 1, 1, ClientSize.Width - 2, HeaderH);
-            using (var b = new SolidBrush(Color.FromArgb(196, 202, 214)))
+            using (var b = new SolidBrush(Theme.TextBody))
             using (var f = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold))
                 g.DrawString("引用", f, b, 12f, 7f);
-            using (var b = new SolidBrush(Color.FromArgb(120, 126, 140)))
+            using (var b = new SolidBrush(Theme.TextSoft))
             using (var f = new Font("Microsoft YaHei UI", 8.5f))
                 g.DrawString("拖动这里移动 · 边缘可缩放 · Esc 关闭", f, b, 52f, 9f);
         }
