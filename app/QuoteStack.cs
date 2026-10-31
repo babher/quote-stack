@@ -4725,6 +4725,7 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
             if (m.Msg == 0x0005)
             {
                 if (_list != null && !_list.IsDisposed) { _list.Invalidate(); _list.Update(); }
+                Invalidate(); Invalidate(true);   // 标题条由窗体自己画，缩放后同样要整块失效
             }
 
             if (m.Msg == WM_NCHITTEST)
