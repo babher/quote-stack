@@ -1279,7 +1279,7 @@ namespace QuoteStack
         Drawer _drawer;
         Point _mouseDown;
         bool _mouseMoved;
-        const int DockedWidth = 64;
+        const int DockedWidth = 36;
         int _dock;
         bool _dockOpen;
         readonly System.Windows.Forms.Timer _dockTimer = new System.Windows.Forms.Timer();
@@ -2236,9 +2236,17 @@ namespace QuoteStack
         {
             g.Clear(Theme.BarBg);
             string n = _count > 99 ? "99+" : _count.ToString();
+            // The strip is a narrow edge tab: the count reads bottom-to-top, bold and large.
             using (var b = new SolidBrush(Theme.TextPrimary))
-            using (var f = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold))
-                g.DrawString(n, f, b, 8f, (Height - g.MeasureString(n, f).Height) / 2f);
+            using (var f = new Font("Microsoft YaHei UI", 15f, FontStyle.Bold))
+            {
+                SizeF sz = g.MeasureString(n, f);
+                GraphicsState st = g.Save();
+                g.TranslateTransform(Width / 2f, Height / 2f);
+                g.RotateTransform(-90f);
+                g.DrawString(n, f, b, -sz.Width / 2f, -sz.Height / 2f);
+                g.Restore(st);
+            }
         }
 
         protected override void OnPaint(PaintEventArgs e)
