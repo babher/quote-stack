@@ -3077,6 +3077,7 @@ namespace QuoteStack
             using (GraphicsPath plate = Theme.RoundPath(plateRect, 18f))
             {
                 using (var pb = new SolidBrush(Theme.DeepBg)) g.FillPath(pb, plate);
+                g.SetClip(plate, CombineMode.Replace);
             }
             using (var hp = new Pen(Theme.IsLight ? Color.FromArgb(215, 255, 255, 255) : Color.FromArgb(30, 255, 255, 255), 1f))
                 g.DrawLine(hp, 18f, 0.5f, Width - 18f, 0.5f);
@@ -3125,7 +3126,8 @@ namespace QuoteStack
                     {
                         float textH = TextHeight(g, i);
                         float tw = Math.Min(BodyWidth, MaxThumbW);
-                        float th = tw * thumb.Height / (float)thumb.Width;
+float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
+                        if (tw < 8f) tw = 8f;
                         if (th > MaxThumbH) { th = MaxThumbH; tw = th * thumb.Width / (float)thumb.Height; }
                         g.DrawImage(thumb, new Rectangle(PadLeft, (int)(y + BodyTop + textH + 6), (int)tw, (int)th));
                     }
@@ -3568,7 +3570,7 @@ namespace QuoteStack
             BackColor = Theme.RowActive;
             Cursor = Cursors.Hand;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
-                | ControlStyles.UserPaint, true);
+| ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
             ApplyRegion();
         }
 
