@@ -2201,7 +2201,7 @@ namespace QuoteStack
 
             string cnt = _count.ToString() + " 条";
             SizeF cntSize = g.MeasureString(cnt, _fCount);
-            using (var b = new SolidBrush(Color.FromArgb(245, 245, 247)))
+            using (var b = new SolidBrush(Theme.TextPrimary))
                 g.DrawString(cnt, _fCount, b, 14f, (Height - cntSize.Height) / 2f);
 
             float x = 14f + cntSize.Width + 10f;
