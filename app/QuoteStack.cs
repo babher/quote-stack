@@ -1118,6 +1118,7 @@ namespace QuoteStack
         string _cfgPath;
         int _flashKind;
         bool _busy;
+        bool _dropPending;   // a dropped picture is being fetched on a worker thread
         Drawer _drawer;
         Point _mouseDown;
         bool _mouseMoved;
@@ -1419,9 +1420,16 @@ namespace QuoteStack
         // A drop becomes a quote through the very same storage call as a capture, so a dragged
         // quote behaves identically downstream (list, insert, cleanup). One record per picture;
         // text that came with the drop rides on the first picture instead of being lost.
+        //
+        // The one outbound request this app makes (fetching the picture a text+image drag points
+        // at) runs on a worker thread: DNS and HTTP must never block the UI thread, otherwise an
+        // offline machine would freeze the app for seconds in the middle of a drop.
         void SaveDropped(DragIn.Payload p)
         {
             if (p == null) { ShowDropFailure("无法读取拖入内容"); return; }
+            // One fetch at a time; a second drop while the first picture is still downloading is
+            // ignored rather than queued, so the amount of work stays bounded and debuggable.
+            if (_dropPending) { Store.LogStartup("dragin: busy-drop"); _status = "正在取上一张图…"; Invalidate(); return; }
             string text = p.Text == null ? "" : p.Text.Trim();
             string url = p.Url == null ? "" : p.Url;
             // Dragging a picture out of a browser puts the picture's own address into the text
@@ -1434,37 +1442,69 @@ namespace QuoteStack
             }
             if (p.Images.Count == 0 && text.Length == 0) { ShowDropFailure("拖入内容为空"); return; }
             // The source line shows the program the drop came from, never a placeholder; the
-            // address (when there is one) gets its own line, so nothing repeats.
+            // address (when there is one) gets its own line, so nothing repeats. It is taken right
+            // now, while the drop is still happening, because fetching shifts the foreground.
             string source = DropSourceLabel();
             // A page drag carries markup but no pixels. The one picture it points at is fetched
-            // (the only outbound request this app ever makes): it makes a text+image drag land
-            // as one quote with its picture, which is what the user asked for.
-            string fetch = "-";
+            // (the only outbound request this app ever makes); inline data: pictures are decoded
+            // locally and need no network at all.
             if (p.Images.Count == 0 && text.Length > 0 && p.Html != null)
             {
                 byte[] inline = DragIn.FirstInlineImage(p.Html);
                 if (inline != null)
                 {
                     p.Images.Add(inline);
-                    fetch = "inline";
+                    AppendPayload(p, source, "inline", text, url);
+                    return;
                 }
-                else
+                string src = DragIn.FirstImageUrl(p.Html, url);
+                if (src == null)
                 {
-                    string src = DragIn.FirstImageUrl(p.Html, url);
-                    if (src == null) fetch = "none";
-                    else
-                    {
-                        Stopwatch fw = Stopwatch.StartNew();
-                        string why;
-                        byte[] png = DragIn.FetchImage(src, 5000, DragIn.MaxImageBytes, out why);
-                        fetch = png != null ? "ok" : why;
-                        Store.LogStartup("dragin: fetch=" + fetch + " imgLen=" + (png == null ? -1 : png.Length)
-                            + " costMs=" + fw.ElapsedMilliseconds);
-                        if (png != null) p.Images.Add(png);
-                    }
+                    AppendPayload(p, source, "none", text, url);
+                    return;
                 }
+                DragIn.Payload payload = p;
+                string textCopy = text;
+                string urlCopy = url;
+                _dropPending = true;
+                _status = "取图中…";
+                Invalidate();
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    string why = "neterr";
+                    byte[] png = null;
+                    Stopwatch fw = Stopwatch.StartNew();
+                    try { png = DragIn.FetchImage(src, 4000, DragIn.MaxImageBytes, out why); }
+                    catch (Exception ex) { why = "exception:" + ex.GetType().Name; }
+                    if (png != null) { payload.Images.Add(png); why = "ok"; }
+                    Store.LogStartup("dragin: fetch=" + why + " imgLen=" + (png == null ? -1 : png.Length)
+                        + " costMs=" + fw.ElapsedMilliseconds);
+                    string verdict = why;
+                    try
+                    {
+                        BeginInvoke((Action)delegate
+                        {
+                            _dropPending = false;
+                            AppendPayload(payload, source, verdict, textCopy, urlCopy);
+                        });
+                    }
+                    catch
+                    {
+                        // The drawer went away while the picture was downloading. Nothing has been
+                        // written yet, so the drop is dropped whole instead of half-stored.
+                        Store.LogStartup("dragin: dropped-after-fetch reason=window-gone");
+                    }
+                });
+                return;
             }
+            AppendPayload(p, source, "-", text, url);
+        }
 
+        // Everything that touches storage and the floating bar, always on the UI thread. `fetch`
+        // is the outcome of the picture fetch ("-" not needed, "inline", "none", "ok", or a
+        // failure code); it only feeds the log line and the user-visible hint.
+        void AppendPayload(DragIn.Payload p, string source, string fetch, string text, string url)
+        {
             int saved = 0;
             string failure = null;
             if (p.Images.Count == 0)
@@ -1510,14 +1550,47 @@ namespace QuoteStack
             if (_drawer != null && !_drawer.IsDisposed && _drawer.Visible)
                 _drawer.ListView.ReloadPreserving();
             _preview = text.Length > 0 ? text : "（图片）";
-            _status = failure == null ? null : "部分失败：" + failure;
-            _flashKind = failure == null ? KindOk : KindErr;
+            // A failed picture fetch is not a failed drop: the text is stored, so say exactly
+            // that instead of staying silent, and name the reason so it is actionable.
+            string fetchNote = FetchReasonText(fetch);
+            _status = failure != null ? "部分失败：" + failure
+                : (fetchNote != null ? "图片未取到（已存文字）· " + fetchNote : null);
+            _flashKind = failure == null && fetchNote == null ? KindOk : KindErr;
             _flash.Interval = 2000;
             _plusAt = Environment.TickCount;
             _anim.Start();
             _flash.Stop();
             _flash.Start();
             Invalidate();
+        }
+
+        // Turns a fetch outcome into something a person can act on; null means "nothing to say"
+        // (the fetch was not attempted, unnecessary, or successful).
+        internal static string FetchReasonText(string fetch)
+        {
+            if (fetch == null) return null;
+            switch (fetch)
+            {
+                case "-":
+                case "ok":
+                case "inline":
+                case "none":
+                    return null;
+                case "blocked": return "图片地址被拒绝";
+                case "badurl": return "图片地址无效";
+                case "timeout": return "取图超时";
+                case "toobig": return "图片超过 20MB";
+                case "notimage": return "取回的不是图片";
+                case "tiny": return "图片太小（追踪像素）";
+                case "neterr": return "网络不可用";
+                case "http-403": return "图床拒绝（403）";
+                case "http-404": return "图床找不到（404）";
+            }
+            if (fetch.StartsWith("http-", StringComparison.Ordinal))
+                return "图床返回 " + fetch.Substring(5);
+            if (fetch.StartsWith("exception:", StringComparison.Ordinal))
+                return "取图出错（" + fetch.Substring(10) + "）";
+            return "图片未取到";
         }
 
         // A drop carries no process name, so the source is taken from the last foreign foreground
