@@ -1279,10 +1279,9 @@ namespace QuoteStack
         Drawer _drawer;
         Point _mouseDown;
         bool _mouseMoved;
-        const int DockedWidth = 56;
+        const int DockedWidth = 64;
         int _dock;
         bool _dockOpen;
-        int _dockLeftAt;
         readonly System.Windows.Forms.Timer _dockTimer = new System.Windows.Forms.Timer();
 
         public FloatBar()
@@ -1347,25 +1346,15 @@ namespace QuoteStack
                     if (!atLeft && !atRight) return;
                     _dock = atLeft ? -1 : 1;
                     _dockOpen = false;
-                    Bounds = new Rectangle(_dock > 0 ? wa.Right - DockedWidth : wa.Left, Top, DockedWidth, Height);
+                    Bounds = new Rectangle(_dock > 0 ? wa.Right - DockedWidth - 4 : wa.Left + 4, Top, DockedWidth, Height);
                     Invalidate();
                     return;
                 }
-                bool over = Bounds.Contains(Cursor.Position);
-                if (over && !_dockOpen)
-                {
-                    _dockOpen = true; _dockLeftAt = 0;
-                    Bounds = new Rectangle(_dock > 0 ? wa.Right - 260 : wa.Left, Top, 260, Height);
-                    Invalidate();
-                }
-                else if (!over && _dockOpen)
-                {
-                    if (_dockLeftAt == 0) { _dockLeftAt = Environment.TickCount; return; }
-                    if (Environment.TickCount - _dockLeftAt < 2000) return;
-                    _dockOpen = false; _dockLeftAt = 0;
-                    Bounds = new Rectangle(_dock > 0 ? wa.Right - DockedWidth : wa.Left, Top, DockedWidth, Height);
-                    Invalidate();
-                }
+                if (!_dockOpen) return;
+                // Expanding is an explicit click now: hovering must not yank the strip open.
+                Bounds = new Rectangle(_dock > 0 ? wa.Right - 260 - 4 : wa.Left + 4, Top, 260, Height);
+                _dockOpen = true;
+                Invalidate();
             };
             _dockTimer.Start();
         }
@@ -2224,13 +2213,20 @@ namespace QuoteStack
             base.OnFormClosing(e);
         }
 
+        protected override void OnClick(EventArgs e)
+        {
+            if (_dock != 0 && _dockOpen) { _dockOpen = false; Rectangle wa = Screen.FromControl(this).WorkingArea; Bounds = new Rectangle(_dock > 0 ? wa.Right - DockedWidth - 4 : wa.Left + 4, Top, DockedWidth, Height); Invalidate(); return; }
+            if (_dock != 0 && !_dockOpen) { _dockOpen = true; Rectangle wa2 = Screen.FromControl(this).WorkingArea; Bounds = new Rectangle(_dock > 0 ? wa2.Right - 260 - 4 : wa2.Left + 4, Top, 260, Height); Invalidate(); return; }
+            base.OnClick(e);
+        }
+
         void DrawDocked(Graphics g)
         {
             g.Clear(Theme.BarBg);
             string n = _count > 99 ? "99+" : _count.ToString();
             using (var b = new SolidBrush(Theme.TextPrimary))
             using (var f = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold))
-                g.DrawString(n, f, b, 6f, (Height - g.MeasureString(n, f).Height) / 2f);
+                g.DrawString(n, f, b, 8f, (Height - g.MeasureString(n, f).Height) / 2f);
         }
 
         protected override void OnPaint(PaintEventArgs e)
