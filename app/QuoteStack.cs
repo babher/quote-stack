@@ -4773,9 +4773,15 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g0 = e.Graphics;
+            g0.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            g0.PixelOffsetMode = PixelOffsetMode.Half;
             g0.SmoothingMode = SmoothingMode.AntiAlias;
-            using (GraphicsPath outer = Theme.RoundPath(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), 10f))
-                Theme.DrawRim(g0, outer, new Rectangle(0, 0, Width, Height));
+            using (var rimPen = new Pen(Theme.IsLight ? Color.FromArgb(210, 255, 255, 255) : Color.FromArgb(34, 255, 255, 255), 1f))
+            {
+                g0.DrawLine(rimPen, 12f, 0.5f, Width - 13f, 0.5f);
+                g0.DrawLine(rimPen, 0.5f, 12f, 0.5f, Height - 13f);
+                g0.DrawLine(rimPen, Width - 1.5f, 12f, Width - 1.5f, Height - 13f);
+            }
             base.OnPaint(e);
             Graphics g = e.Graphics;
             using (var b = new SolidBrush(Theme.FieldBg))
