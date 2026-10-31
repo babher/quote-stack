@@ -3241,6 +3241,7 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
                 }
             }
 
+            g.ResetClip();   // the plate clip above would otherwise swallow the bottom bar
             // bottom bar
             int barY = Height - BottomBarH;
             using (var b = new SolidBrush(Theme.BottomBar))
