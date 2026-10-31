@@ -3440,6 +3440,10 @@ float th = Math.Min(tw * thumb.Height / (float)thumb.Width, MaxThumbH);
             if (_items.Count == 0) return;
             if (i < 0) i = 0;
             if (i > _items.Count - 1) i = _items.Count - 1;
+            // rows inside collapsed groups have zero height: never park the cursor on one
+            int skipDir = (i >= _sel) ? 1 : -1;
+            while (i >= 0 && i < _items.Count && _h[i] <= 0.5f) i += skipDir;
+            if (i < 0 || i >= _items.Count) return;
             _sel = i;
             _hint = null;
             EnsureVisible(i);
